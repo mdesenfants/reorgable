@@ -22,7 +22,21 @@ type IngestedItem = {
   source_type: "task" | "document" | "email" | "note";
   title: string;
   summary_input: string;
+  metadata_json: string;
   created_at: string;
+};
+
+type ItemMetadata = {
+  isDone?: boolean;
+  isUnread?: boolean;
+  inInbox?: boolean;
+  from?: string;
+  to?: string;
+  sentAt?: string;
+  relatedEmailSubject?: string;
+  relatedEmailFrom?: string;
+  relatedEmailMessageId?: string;
+  externalId?: string;
 };
 
 type WeatherSnapshot = {
@@ -112,7 +126,7 @@ async function fetchWeather(): Promise<WeatherSnapshot> {
 
 async function getItemsSinceCursor(env: Env, cursor: string): Promise<IngestedItem[]> {
   const { results } = await env.DB.prepare(
-    `SELECT id, source_type, title, summary_input, created_at
+    `SELECT id, source_type, title, summary_input, metadata_json, created_at
      FROM items
      WHERE created_at > ?1
      ORDER BY created_at ASC`
@@ -133,12 +147,92 @@ async function getItemsSinceLastRun(
   return { items: await getItemsSinceCursor(env, cursor), cursor };
 }
 
+function safeParseMetadata(item: IngestedItem): ItemMetadata {
+  try {
+    const parsed = JSON.parse(item.metadata_json) as ItemMetadata;
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function normalizeForMatch(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9\s@.-]+/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function tokenize(value: string): Set<string> {
+  const stopwords = new Set(["the", "and", "for", "with", "from", "that", "this", "have", "will", "your", "about", "reply", "email", "thread", "follow", "message"]);
+  const words = normalizeForMatch(value)
+    .split(" ")
+    .map((word) => word.trim())
+    .filter((word) => word.length >= 4 && !stopwords.has(word));
+  return new Set(words);
+}
+
+function overlapCount(left: Set<string>, right: Set<string>): number {
+  let count = 0;
+  for (const value of left) {
+    if (right.has(value)) count += 1;
+  }
+  return count;
+}
+
+function emailIsLinkedToTask(task: IngestedItem, email: IngestedItem): boolean {
+  const taskMeta = safeParseMetadata(task);
+  const emailMeta = safeParseMetadata(email);
+
+  const taskText = `${task.title} ${task.summary_input} ${taskMeta.relatedEmailSubject ?? ""} ${taskMeta.relatedEmailFrom ?? ""}`;
+  const emailText = `${email.title} ${email.summary_input} ${emailMeta.from ?? ""} ${emailMeta.to ?? ""}`;
+
+  const taskMessageId = (taskMeta.relatedEmailMessageId ?? "").replace(/[<>]/g, "").trim().toLowerCase();
+  const emailMessageId = (emailMeta.externalId ?? "").replace(/[<>]/g, "").trim().toLowerCase();
+  if (taskMessageId && emailMessageId && taskMessageId === emailMessageId) {
+    return true;
+  }
+
+  const taskFrom = (taskMeta.relatedEmailFrom ?? "").trim().toLowerCase();
+  const emailFrom = (emailMeta.from ?? "").trim().toLowerCase();
+  const taskSubject = normalizeForMatch(taskMeta.relatedEmailSubject ?? "");
+  const emailSubject = normalizeForMatch(email.title);
+  if (taskFrom && emailFrom && taskFrom === emailFrom && taskSubject && emailSubject.includes(taskSubject)) {
+    return true;
+  }
+
+  const taskTokens = tokenize(taskText);
+  const emailTokens = tokenize(emailText);
+  return overlapCount(taskTokens, emailTokens) >= 2;
+}
+
+function filterItemsForBrief(items: IngestedItem[]): IngestedItem[] {
+  const tasks = items.filter((item) => item.source_type === "task");
+  const nonEmails = items.filter((item) => item.source_type !== "email");
+  const unreadInboxEmails = items.filter((item) => {
+    if (item.source_type !== "email") return false;
+    const metadata = safeParseMetadata(item);
+    return metadata.isUnread === true && metadata.inInbox === true;
+  });
+
+  const openTasks = tasks.filter((item) => safeParseMetadata(item).isDone !== true);
+  const matchedEmailIds = new Set<string>();
+  for (const task of openTasks) {
+    for (const email of unreadInboxEmails) {
+      if (emailIsLinkedToTask(task, email)) {
+        matchedEmailIds.add(email.id);
+      }
+    }
+  }
+
+  const linkedEmails = unreadInboxEmails.filter((email) => matchedEmailIds.has(email.id));
+  return [...nonEmails, ...linkedEmails].sort((a, b) => a.created_at.localeCompare(b.created_at));
+}
+
 function buildGeminiPrompt(items: IngestedItem[], weather: WeatherSnapshot, dateLabel: string): string {
   const compact = items.map((item) => ({
     id: item.id,
     type: item.source_type,
     title: item.title,
     text: item.summary_input,
+    metadata: safeParseMetadata(item),
     createdAt: item.created_at
   }));
 
@@ -375,7 +469,8 @@ async function runDailyReport(env: Env, opts?: { force?: boolean; lookbackHours?
   const fileName = buildFileName(now);
 
   const [{ items, cursor }, weather] = await Promise.all([getItemsSinceLastRun(env, cursorOverride), fetchWeather()]);
-  const summary = consolidateEmailLinkedTodos(await summarizeWithGemini(env, items, weather, dateLabel));
+  const filteredItems = filterItemsForBrief(items);
+  const summary = consolidateEmailLinkedTodos(await summarizeWithGemini(env, filteredItems, weather, dateLabel));
 
   const pdfBytes = await renderHtmlToPdf(env, {
     dateLabel,
@@ -403,7 +498,7 @@ async function runDailyReport(env: Env, opts?: { force?: boolean; lookbackHours?
   await persistRun(
     env,
     now.toISOString(),
-    items.length,
+    filteredItems.length,
     JSON.stringify(summary),
     uploadResult.ok ? "uploaded" : "failed",
     uploadResult.message
@@ -415,7 +510,7 @@ async function runDailyReport(env: Env, opts?: { force?: boolean; lookbackHours?
     ok: true,
     skipped: false,
     cursorUsed: cursor,
-    sourceCount: items.length,
+    sourceCount: filteredItems.length,
     reportKey,
     remarkable: uploadResult,
     archive: archiveResult

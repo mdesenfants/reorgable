@@ -10,6 +10,9 @@ export const taskIngestSchema = z.object({
   priority: z.enum(["low", "medium", "high"]).default("medium"),
   tags: z.array(z.string()).default([]),
   isDone: z.boolean().default(false),
+  relatedEmailSubject: z.string().min(1).optional(),
+  relatedEmailFrom: z.string().email().optional(),
+  relatedEmailMessageId: z.string().min(1).optional(),
   externalId: z.string().optional()
 });
 
@@ -29,6 +32,8 @@ export const emailIngestSchema = z.object({
   bodyHtml: z.string().optional(),
   sentAt: z.string().datetime().optional(),
   attachmentKeys: z.array(z.string()).default([]),
+  isUnread: z.boolean().default(false),
+  inInbox: z.boolean().default(false),
   isStarred: z.boolean().default(false),
   externalId: z.string().optional()
 });

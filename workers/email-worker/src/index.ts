@@ -62,6 +62,8 @@ export default {
       bodyText: `Raw email stored in R2 key: ${rawKey}`,
       sentAt: nowIso,
       attachmentKeys: [rawKey],
+      isUnread: true,
+      inInbox: true,
       externalId
     };
 

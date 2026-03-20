@@ -223,11 +223,13 @@ Ingest a task from any source (Google Tasks, Reminders, etc.).
 ```json
 {
   "title": "Follow up on Q2 budget",
-  "notes": "Ask Alex — she has the spreadsheet",
-  "due": "2026-03-25T00:00:00Z",
+  "details": "Ask Alex — she has the spreadsheet",
+  "dueAt": "2026-03-25T00:00:00Z",
   "isDone": false,
-  "externalId": "tasks-abc123",
-  "source": "google-tasks"
+  "relatedEmailSubject": "Re: Q2 planning",
+  "relatedEmailFrom": "alice@example.com",
+  "relatedEmailMessageId": "CAF123@example.com",
+  "externalId": "tasks-abc123"
 }
 ```
 
@@ -239,12 +241,21 @@ Ingest email metadata (used internally by the email-worker).
 {
   "subject": "Re: Q2 planning",
   "from": "alice@example.com",
-  "snippet": "Happy to connect Thursday",
-  "isStarred": true,
-  "externalId": "gmail-thread-xyz",
-  "source": "gmail"
+  "to": "you@example.com",
+  "bodyText": "Happy to connect Thursday",
+  "isUnread": true,
+  "inInbox": true,
+  "isStarred": false,
+  "externalId": "<message-id>"
 }
 ```
+
+### Email inclusion workflow
+
+- The report worker only includes emails where `isUnread=true` and `inInbox=true`.
+- Those emails are only included when at least one open task (`isDone=false`) is linked to them.
+- Linkage is strongest when tasks provide `relatedEmailMessageId` and/or `relatedEmailSubject` + `relatedEmailFrom`.
+- If no task matches an email, that email is excluded from the brief.
 
 ### `POST /ingest/note`
 
@@ -306,10 +317,9 @@ Deployed reference: `scripts/google-apps-script-task-push.deployed.gs`
 Force a full report run (POST to `/run?force=true`):
 
 ```bash
-npm run report:force
-
-# Override URL or add auth
 REPORT_URL=https://<your-report-worker>.workers.dev npm run report:force
+
+# Add auth if your worker is protected
 REPORT_API_TOKEN=<token> npm run report:force
 
 # Include items from the last 72 hours regardless of cursor
@@ -322,7 +332,7 @@ SINCE_ISO=2026-03-15T00:00:00Z npm run report:force
 Health check:
 
 ```bash
-npm run report:health
+REPORT_URL=https://<your-report-worker>.workers.dev npm run report:health
 ```
 
 Local PDF preview (writes to `output/`):

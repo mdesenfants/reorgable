@@ -96,6 +96,9 @@ async function handleTaskIngest(request: Request, env: Env): Promise<Response> {
       priority: payload.priority,
       tags: payload.tags,
       isDone: payload.isDone,
+      relatedEmailSubject: payload.relatedEmailSubject ?? null,
+      relatedEmailFrom: payload.relatedEmailFrom ?? null,
+      relatedEmailMessageId: payload.relatedEmailMessageId ?? null,
       externalId: payload.externalId ?? null
     },
     payload,
@@ -141,6 +144,8 @@ async function handleEmailIngest(request: Request, env: Env): Promise<Response> 
       to: payload.to,
       sentAt: payload.sentAt ?? null,
       attachmentKeys: payload.attachmentKeys,
+      isUnread: payload.isUnread,
+      inInbox: payload.inInbox,
       isStarred: payload.isStarred,
       externalId: payload.externalId ?? null
     },

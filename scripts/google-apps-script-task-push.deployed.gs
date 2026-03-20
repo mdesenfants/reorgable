@@ -35,12 +35,16 @@ function pushTasksToReorgable() {
   var items = tasks.items || [];
   for (var i = 0; i < items.length; i++) {
     var t = items[i];
+    var emailContext = extractEmailContext(t.notes || '');
     var payload = {
       title: t.title || 'Untitled task',
       details: t.notes || undefined,
       dueAt: t.due ? new Date(t.due).toISOString() : undefined,
       priority: 'medium',
       tags: ['google-tasks'],
+      relatedEmailSubject: emailContext.subject,
+      relatedEmailFrom: emailContext.from,
+      relatedEmailMessageId: emailContext.messageId,
       externalId: t.id
     };
 
@@ -63,4 +67,21 @@ function pushTasksToReorgable() {
 
 function trimSlash(value) {
   return value.replace(/\/$/, '');
+}
+
+function extractEmailContext(notes) {
+  var messageIdMatch = notes.match(/message-id\s*[:=]\s*<?([^>\s]+)>?/i);
+  var fromMatch = notes.match(/from\s*[:=]\s*([^\n\r]+)/i);
+  var subjectMatch = notes.match(/subject\s*[:=]\s*([^\n\r]+)/i);
+
+  return {
+    messageId: messageIdMatch ? String(messageIdMatch[1]).trim() : undefined,
+    from: fromMatch ? extractEmailAddress(String(fromMatch[1])) : undefined,
+    subject: subjectMatch ? String(subjectMatch[1]).trim() : undefined
+  };
+}
+
+function extractEmailAddress(value) {
+  var emailMatch = value.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
+  return emailMatch ? String(emailMatch[0]).toLowerCase() : undefined;
 }

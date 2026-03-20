@@ -5,7 +5,7 @@ set -euo pipefail
 #
 # Environment variables:
 #   REPORT_URL         Base report worker URL.
-#                      Default: https://reorgable-report.matt-desenfants.workers.dev
+#                      Required.
 #   REPORT_API_TOKEN   Optional bearer token for protected deployments.
 #   LOOKBACK_HOURS     Optional positive integer to include older context.
 #                      Example: 72 includes items from last 72 hours.
@@ -14,7 +14,6 @@ set -euo pipefail
 #   CURL_TIMEOUT_SEC   Curl max time in seconds (default: 120)
 #
 # Usage:
-#   ./scripts/report-force.sh
 #   REPORT_URL=https://... ./scripts/report-force.sh
 #   REPORT_API_TOKEN=... ./scripts/report-force.sh
 

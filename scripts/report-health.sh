@@ -5,7 +5,7 @@ set -euo pipefail
 #
 # Environment variables:
 #   REPORT_URL       Base report worker URL.
-#                    Default: https://reorgable-report.matt-desenfants.workers.dev
+#                    Required.
 #   REPORT_API_TOKEN Optional bearer token for protected deployments.
 
 REPORT_URL="${REPORT_URL:?REPORT_URL is required. Set it to your deployed report worker URL, e.g. https://reorgable-report.<your-subdomain>.workers.dev}"
