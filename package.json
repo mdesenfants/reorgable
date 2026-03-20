@@ -17,6 +17,7 @@
     "preview": "tsx scripts/preview-report.ts",
     "test:deployed": "tsx scripts/test-deployed.ts",
     "test:ingest:note": "tsx scripts/test-ingest-note.ts",
+    "note": "bash ./scripts/quick-note.sh",
     "report:health": "bash ./scripts/report-health.sh",
     "report:force": "bash ./scripts/report-force.sh",
     "deploy:report": "npm run -w @reorgable/report-worker deploy && npm run test:deployed"

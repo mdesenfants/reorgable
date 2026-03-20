@@ -207,6 +207,7 @@ npm run test:deployed
 | `deploy:report` | Deploy the report-worker with minification |
 | `report:health` | GET `/health` on the deployed report worker |
 | `report:force` | POST `/run?force=true` on the deployed report worker |
+| `note` | Quick-capture a thought for tomorrow's brief |
 | `test:deployed` | Smoke-test the deployed ingest worker endpoints |
 | `test:ingest:note` | POST a test note to the deployed ingest worker |
 
@@ -335,6 +336,47 @@ Deployed reference: `scripts/google-apps-script-task-push.deployed.gs`
 The script pushes:
 - Open Google Tasks to `/ingest/task`
 - Today's events from all calendars to `/ingest/calendar`
+
+---
+
+## Quick capture — dropping thoughts for tomorrow's brief
+
+The fastest way to get a random thought into tomorrow's report:
+
+```bash
+export INGEST_API_TOKEN=<your-token>
+
+# One-liner
+npm run note "Remember to check the deploy logs"
+
+# With a custom tag
+npm run note "Ask Alex about Q2 budget" work
+```
+
+The `note` script (`scripts/quick-note.sh`) posts to `/ingest/note`. Notes appear in the **Notes** section of the next day's report and are also passed to Gemini for the overview summary.
+
+If you prefer curl directly:
+
+```bash
+curl -X POST https://reorgable-ingest.matt-desenfants.workers.dev/ingest/note \
+  -H "Authorization: Bearer $INGEST_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"title":"Quick capture","text":"Remember to check the deploy logs"}'
+```
+
+**Shell alias** (add to `~/.zshrc` or `~/.bashrc`):
+
+```bash
+note() {
+  curl -s -X POST https://reorgable-ingest.matt-desenfants.workers.dev/ingest/note \
+    -H "Authorization: Bearer $INGEST_API_TOKEN" \
+    -H "Content-Type: application/json" \
+    -d "$(jq -n --arg t "$*" '{title:"Quick capture",text:$t}')" \
+  && echo "✓ Captured"
+}
+```
+
+Then just: `note Remember to check the deploy logs`
 
 ---
 
