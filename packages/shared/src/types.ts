@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const sourceTypeSchema = z.enum(["task", "document", "email", "note"]);
+export const sourceTypeSchema = z.enum(["task", "document", "email", "note", "calendar"]);
 export type SourceType = z.infer<typeof sourceTypeSchema>;
 
 export const taskIngestSchema = z.object({
@@ -45,6 +45,15 @@ export const noteIngestSchema = z.object({
   externalId: z.string().optional()
 });
 
+export const calendarIngestSchema = z.object({
+  title: z.string().min(1),
+  startAt: z.string().datetime(),
+  endAt: z.string().datetime(),
+  calendarName: z.string().min(1),
+  isAllDay: z.boolean().default(false),
+  externalId: z.string().optional()
+});
+
 export const storedItemPayloadSchema = z.object({
   id: z.string(),
   sourceType: sourceTypeSchema,
@@ -58,4 +67,5 @@ export type TaskIngest = z.infer<typeof taskIngestSchema>;
 export type DocumentIngest = z.infer<typeof documentIngestSchema>;
 export type EmailIngest = z.infer<typeof emailIngestSchema>;
 export type NoteIngest = z.infer<typeof noteIngestSchema>;
+export type CalendarIngest = z.infer<typeof calendarIngestSchema>;
 export type StoredItemPayload = z.infer<typeof storedItemPayloadSchema>;

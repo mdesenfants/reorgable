@@ -6,13 +6,31 @@
   },
   "report": {
     "overview": "A steady start to the week. Two feature branches are ready for review and the deploy pipeline is green. A handful of open tasks from last week carry over, and one vendor thread needs a reply. The afternoon is clear for focused work.",
-    "agenda": [
-      "9:00 AM – Team standup",
-      "10:30 AM – Project sync",
-      "12:00 PM – Lunch",
-      "2:00 PM – Deep work block",
-      "4:00 PM – Code review",
-      "5:00 PM – EOD wrap-up"
+    "agendaEvents": [
+      {
+        "title": "Team standup",
+        "startAt": "2024-01-01T17:00:00.000Z",
+        "endAt": "2024-01-01T17:30:00.000Z",
+        "startLabel": "9:00 AM",
+        "endLabel": "9:30 AM",
+        "calendarName": "Work"
+      },
+      {
+        "title": "Project sync",
+        "startAt": "2024-01-01T18:30:00.000Z",
+        "endAt": "2024-01-01T19:30:00.000Z",
+        "startLabel": "10:30 AM",
+        "endLabel": "11:30 AM",
+        "calendarName": "Work"
+      },
+      {
+        "title": "Code review block",
+        "startAt": "2024-01-02T00:00:00.000Z",
+        "endAt": "2024-01-02T01:00:00.000Z",
+        "startLabel": "4:00 PM",
+        "endLabel": "5:00 PM",
+        "calendarName": "Engineering"
+      }
     ],
     "todos": [
       { "task": "Review open pull requests", "done": false },
@@ -26,6 +44,11 @@
       "Follow up on open vendor proposal",
       "Check in with teammate on blocked ticket",
       "Review analytics numbers before Friday sync"
+    ],
+    "noteLines": [
+      "Ask Alex for updated budget assumptions.",
+      "Capture blockers before planning call.",
+      "Remember to send release note draft."
     ]
   }
 }

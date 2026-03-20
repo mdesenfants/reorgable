@@ -1,5 +1,5 @@
 import puppeteer, { type BrowserWorker } from "@cloudflare/puppeteer";
-import { reportOutputJsonSchema, reportOutputSchema } from "@reorgable/shared";
+import { z } from "zod";
 import { makeRemarkableAdapter } from "./remarkable/adapter-factory";
 import { renderHtml } from "./template";
 
@@ -19,7 +19,7 @@ type Env = {
 
 type IngestedItem = {
   id: string;
-  source_type: "task" | "document" | "email" | "note";
+  source_type: "task" | "document" | "email" | "note" | "calendar";
   title: string;
   summary_input: string;
   metadata_json: string;
@@ -30,14 +30,47 @@ type ItemMetadata = {
   isDone?: boolean;
   isUnread?: boolean;
   inInbox?: boolean;
+  tags?: string[];
   from?: string;
   to?: string;
   sentAt?: string;
+  startAt?: string;
+  endAt?: string;
+  calendarName?: string;
+  isAllDay?: boolean;
   relatedEmailSubject?: string;
   relatedEmailFrom?: string;
   relatedEmailMessageId?: string;
   externalId?: string;
 };
+
+type CalendarEvent = {
+  title: string;
+  startAt: string;
+  endAt: string;
+  startLabel: string;
+  endLabel: string;
+  calendarName: string;
+};
+
+const llmSummarySchema = z.object({
+  overview: z.string().min(1),
+  followUps: z.array(z.string().min(1)).max(10)
+});
+
+const llmSummaryJsonSchema = {
+  type: "object",
+  properties: {
+    overview: { type: "string", description: "2-5 sentence overview of today." },
+    followUps: {
+      type: "array",
+      items: { type: "string" },
+      maxItems: 10,
+      description: "Calls, emails, and follow-up actions."
+    }
+  },
+  required: ["overview", "followUps"]
+} as const;
 
 type WeatherSnapshot = {
   tempF: number;
@@ -226,6 +259,80 @@ function filterItemsForBrief(items: IngestedItem[]): IngestedItem[] {
   return [...nonEmails, ...linkedEmails].sort((a, b) => a.created_at.localeCompare(b.created_at));
 }
 
+function toPacificDateKey(iso: string): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: PACIFIC_TIMEZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(new Date(iso));
+  const y = parts.find((p) => p.type === "year")?.value ?? "0000";
+  const m = parts.find((p) => p.type === "month")?.value ?? "01";
+  const d = parts.find((p) => p.type === "day")?.value ?? "01";
+  return `${y}-${m}-${d}`;
+}
+
+function formatPacificTime(iso: string): string {
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: PACIFIC_TIMEZONE,
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true
+  }).format(new Date(iso));
+}
+
+function buildCalendarAgenda(items: IngestedItem[], now: Date): CalendarEvent[] {
+  const todayKey = toPacificDateKey(now.toISOString());
+
+  const events = items
+    .filter((item) => item.source_type === "calendar")
+    .map((item) => {
+      const m = safeParseMetadata(item);
+      if (!m.startAt || !m.endAt) return null;
+      return {
+        title: item.title,
+        startAt: m.startAt,
+        endAt: m.endAt,
+        calendarName: m.calendarName ?? "Calendar"
+      };
+    })
+    .filter((v): v is { title: string; startAt: string; endAt: string; calendarName: string } => !!v)
+    .filter((event) => toPacificDateKey(event.startAt) === todayKey)
+    .sort((a, b) => a.startAt.localeCompare(b.startAt))
+    .slice(0, 30)
+    .map((event) => ({
+      ...event,
+      startLabel: formatPacificTime(event.startAt),
+      endLabel: formatPacificTime(event.endAt)
+    }));
+
+  return events;
+}
+
+function buildGoogleTaskTodos(items: IngestedItem[]): Array<{ task: string; done: boolean }> {
+  return items
+    .filter((item) => item.source_type === "task")
+    .map((item) => {
+      const m = safeParseMetadata(item);
+      return {
+        task: item.title,
+        done: m.isDone === true,
+        isGoogleTask: (m.tags ?? []).includes("google-tasks")
+      };
+    })
+    .filter((todo) => todo.isGoogleTask)
+    .map(({ task, done }) => ({ task, done }))
+    .slice(0, 20);
+}
+
+function buildNoteLines(items: IngestedItem[]): string[] {
+  return items
+    .filter((item) => item.source_type === "note")
+    .map((item) => item.summary_input.trim())
+    .filter(Boolean)
+    .slice(0, 18);
+}
+
 function buildGeminiPrompt(items: IngestedItem[], weather: WeatherSnapshot, dateLabel: string): string {
   const compact = items.map((item) => ({
     id: item.id,
@@ -243,41 +350,11 @@ function buildGeminiPrompt(items: IngestedItem[], weather: WeatherSnapshot, date
     "Return JSON matching the schema exactly.",
     "Guidance:",
     "- overview: concise executive summary",
-    "- agenda: ordered list for today",
-    "- todos: concrete checklist items",
     "- followUps: communications or dependencies",
-    "- if a task is connected to email/messages (reply/respond/thread/inbox/follow-up), put it in followUps instead of todos",
-    "- reserve todos for non-communication execution work",
+    "- focus on key dependencies and communication risk",
     "Input items:",
     JSON.stringify(compact)
   ].join("\n");
-}
-
-function consolidateEmailLinkedTodos(summary: {
-  overview: string;
-  agenda: string[];
-  todos: Array<{ task: string; done: boolean }>;
-  followUps: string[];
-}) {
-  const emailLike = /(email|reply|respond|inbox|thread|follow\s*-?\s*up|message)/i;
-  const moved: string[] = [];
-  const keptTodos = summary.todos.filter((todo) => {
-    if (!emailLike.test(todo.task)) return true;
-    moved.push(todo.task);
-    return false;
-  });
-
-  const mergedFollowUps = [...summary.followUps, ...moved]
-    .map((v) => v.trim())
-    .filter(Boolean);
-
-  const dedupedFollowUps = Array.from(new Set(mergedFollowUps)).slice(0, 10);
-
-  return {
-    ...summary,
-    todos: keptTodos,
-    followUps: dedupedFollowUps
-  };
 }
 
 function extractJsonObject(text: string): string {
@@ -311,7 +388,7 @@ async function summarizeWithGemini(
         contents: [{ role: "user", parts: [{ text: prompt }] }],
         generationConfig: {
           responseMimeType: "application/json",
-          responseSchema: reportOutputJsonSchema
+          responseSchema: llmSummaryJsonSchema
         }
       })
     }
@@ -331,7 +408,7 @@ async function summarizeWithGemini(
   if (!text) throw new Error("Gemini response was empty");
 
   const parsed = JSON.parse(extractJsonObject(text));
-  return reportOutputSchema.parse(parsed);
+  return llmSummarySchema.parse(parsed);
 }
 
 async function renderHtmlToPdf(
@@ -340,18 +417,20 @@ async function renderHtmlToPdf(
     dateLabel: string;
     weather: WeatherSnapshot;
     overview: string;
-    agenda: string[];
+    agendaEvents: CalendarEvent[];
     todos: Array<{ task: string; done: boolean }>;
     followUps: string[];
+    noteLines: string[];
   }
 ): Promise<Uint8Array> {
   const html = renderHtml({
     dateLabel: args.dateLabel,
     weather: args.weather,
     overview: args.overview,
-    agenda: args.agenda,
+    agendaEvents: args.agendaEvents,
     todos: args.todos,
     followUps: args.followUps,
+    noteLines: args.noteLines,
   });
 
   const browser = await puppeteer.launch(env.BROWSER);
@@ -470,15 +549,19 @@ async function runDailyReport(env: Env, opts?: { force?: boolean; lookbackHours?
 
   const [{ items, cursor }, weather] = await Promise.all([getItemsSinceLastRun(env, cursorOverride), fetchWeather()]);
   const filteredItems = filterItemsForBrief(items);
-  const summary = consolidateEmailLinkedTodos(await summarizeWithGemini(env, filteredItems, weather, dateLabel));
+  const llmSummary = await summarizeWithGemini(env, filteredItems, weather, dateLabel);
+  const agendaEvents = buildCalendarAgenda(filteredItems, now);
+  const todos = buildGoogleTaskTodos(filteredItems);
+  const noteLines = buildNoteLines(filteredItems);
 
   const pdfBytes = await renderHtmlToPdf(env, {
     dateLabel,
     weather,
-    overview: summary.overview,
-    agenda: summary.agenda,
-    todos: summary.todos,
-    followUps: summary.followUps,
+    overview: llmSummary.overview,
+    agendaEvents,
+    todos,
+    followUps: llmSummary.followUps,
+    noteLines,
   });
 
   const reportKey = `reports/${fileName}`;
@@ -499,7 +582,13 @@ async function runDailyReport(env: Env, opts?: { force?: boolean; lookbackHours?
     env,
     now.toISOString(),
     filteredItems.length,
-    JSON.stringify(summary),
+    JSON.stringify({
+      overview: llmSummary.overview,
+      followUps: llmSummary.followUps,
+      agendaEvents,
+      todos,
+      noteLines
+    }),
     uploadResult.ok ? "uploaded" : "failed",
     uploadResult.message
   );

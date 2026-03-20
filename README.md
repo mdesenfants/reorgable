@@ -250,12 +250,34 @@ Ingest email metadata (used internally by the email-worker).
 }
 ```
 
+### `POST /ingest/calendar`
+
+Ingest a calendar event (used by Google Apps Script calendar sync):
+
+```json
+{
+  "title": "Project sync",
+  "startAt": "2026-03-20T17:00:00Z",
+  "endAt": "2026-03-20T18:00:00Z",
+  "calendarName": "Work",
+  "isAllDay": false,
+  "externalId": "calendar-id:event-id:start-ms"
+}
+```
+
 ### Email inclusion workflow
 
 - The report worker only considers emails in the inbox (`inInbox=true`).
 - Those emails are included when at least one open task (`isDone=false`) is linked to them, regardless of `isUnread` state.
 - Linkage is strongest when tasks provide `relatedEmailMessageId` and/or `relatedEmailSubject` + `relatedEmailFrom`.
 - If no task matches an email, that email is excluded from the brief.
+
+### Report composition workflow
+
+- **Agenda** is derived only from ingested `calendar` items for the target day and always shows start/end times.
+- **Todos** are derived only from ingested tasks tagged `google-tasks`.
+- **Page 2** renders a one-day calendar view from 6:00 AM to 9:00 PM Pacific.
+- **Last page** is a dedicated full-page notes sheet.
 
 ### `POST /ingest/note`
 
@@ -309,6 +331,10 @@ Deployed reference: `scripts/google-apps-script-task-push.deployed.gs`
    - `INGEST_API_TOKEN` — your shared token
    - `TASKLIST_ID` — optional, defaults to `@default`
 5. Add a time-based trigger for `pushTasksToReorgable` (every 15 minutes works well).
+
+The script pushes:
+- Open Google Tasks to `/ingest/task`
+- Today's events from all calendars to `/ingest/calendar`
 
 ---
 

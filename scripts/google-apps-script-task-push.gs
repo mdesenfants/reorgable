@@ -56,6 +56,8 @@ function pushTasksToReorgable() {
       Logger.log('Failed task push for id=%s code=%s body=%s', t.id, code, response.getContentText());
     }
   }
+
+  pushTodayCalendarEventsToReorgable(ingestUrl, apiToken);
 }
 
 function trimSlash(value) {
@@ -77,4 +79,43 @@ function extractEmailContext(notes) {
 function extractEmailAddress(value) {
   var emailMatch = value.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
   return emailMatch ? String(emailMatch[0]).toLowerCase() : undefined;
+}
+
+function pushTodayCalendarEventsToReorgable(ingestUrl, apiToken) {
+  var calendars = CalendarApp.getAllCalendars();
+  var now = new Date();
+  var start = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+  var end = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+
+  for (var c = 0; c < calendars.length; c++) {
+    var cal = calendars[c];
+    var events = cal.getEvents(start, end);
+
+    for (var e = 0; e < events.length; e++) {
+      var event = events[e];
+      var calendarPayload = {
+        title: event.getTitle() || 'Untitled event',
+        startAt: event.getStartTime().toISOString(),
+        endAt: event.getEndTime().toISOString(),
+        calendarName: cal.getName() || 'Calendar',
+        isAllDay: event.isAllDayEvent(),
+        externalId: cal.getId() + ':' + event.getId() + ':' + event.getStartTime().getTime()
+      };
+
+      var response = UrlFetchApp.fetch(trimSlash(ingestUrl) + '/ingest/calendar', {
+        method: 'post',
+        contentType: 'application/json',
+        muteHttpExceptions: true,
+        headers: {
+          Authorization: 'Bearer ' + apiToken
+        },
+        payload: JSON.stringify(calendarPayload)
+      });
+
+      var code = response.getResponseCode();
+      if (code < 200 || code > 299) {
+        Logger.log('Failed calendar push for calendar=%s event=%s code=%s body=%s', cal.getName(), event.getTitle(), code, response.getContentText());
+      }
+    }
+  }
 }

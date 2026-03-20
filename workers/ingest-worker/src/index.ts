@@ -1,4 +1,5 @@
 import {
+  calendarIngestSchema,
   documentIngestSchema,
   emailIngestSchema,
   noteIngestSchema,
@@ -177,6 +178,29 @@ async function handleNoteIngest(request: Request, env: Env): Promise<Response> {
   return json(result, 201);
 }
 
+async function handleCalendarIngest(request: Request, env: Env): Promise<Response> {
+  const body = await parseJsonBody(request);
+  const payload = calendarIngestSchema.parse(body);
+
+  const result = await persistItem(
+    env,
+    "calendar",
+    payload.title,
+    `${payload.startAt} - ${payload.endAt} (${payload.calendarName}) ${payload.title}`,
+    {
+      startAt: payload.startAt,
+      endAt: payload.endAt,
+      calendarName: payload.calendarName,
+      isAllDay: payload.isAllDay,
+      externalId: payload.externalId ?? null
+    },
+    payload,
+    payload.externalId ?? `${payload.calendarName}:${payload.title}:${payload.startAt}:${payload.endAt}`
+  );
+
+  return json(result, 201);
+}
+
 export default {
   async fetch(request, env): Promise<Response> {
     try {
@@ -202,6 +226,10 @@ export default {
 
       if (request.method === "POST" && pathname === "/ingest/note") {
         return handleNoteIngest(request, env);
+      }
+
+      if (request.method === "POST" && pathname === "/ingest/calendar") {
+        return handleCalendarIngest(request, env);
       }
 
       return json({ error: "Not found" }, 404);

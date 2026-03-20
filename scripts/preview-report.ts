@@ -23,9 +23,17 @@ interface Fixture {
   weather: { tempF: number; weatherCode: number };
   report: {
     overview: string;
-    agenda: string[];
+    agendaEvents: Array<{
+      title: string;
+      startAt: string;
+      endAt: string;
+      startLabel: string;
+      endLabel: string;
+      calendarName: string;
+    }>;
     todos: Array<{ task: string; done: boolean }>;
     followUps: string[];
+    noteLines: string[];
   };
 }
 
@@ -42,9 +50,10 @@ async function main(): Promise<void> {
     dateLabel: fixture.dateLabel,
     weather: fixture.weather,
     overview: fixture.report.overview,
-    agenda: fixture.report.agenda,
+    agendaEvents: fixture.report.agendaEvents,
     todos: fixture.report.todos,
     followUps: fixture.report.followUps,
+    noteLines: fixture.report.noteLines,
   };
 
   const html = renderHtml(data);

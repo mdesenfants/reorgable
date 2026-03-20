@@ -6,9 +6,17 @@ export interface TemplateData {
   dateLabel: string;
   weather: { tempF: number; weatherCode: number };
   overview: string;
-  agenda: string[];
+  agendaEvents: Array<{
+    title: string;
+    startAt: string;
+    endAt: string;
+    startLabel: string;
+    endLabel: string;
+    calendarName: string;
+  }>;
   todos: Array<{ task: string; done: boolean }>;
   followUps: string[];
+  noteLines: string[];
 }
 
 /** Escape HTML special characters to prevent injection in rendered output. */
@@ -70,13 +78,13 @@ function ruledLinesFill(count: number): string {
 }
 
 export function renderHtml(data: TemplateData): string {
-  // Phase 1: Filter out done items — they'll drop off the next day's report.
+  // Keep only active tasks for the check-list panel.
   const activeTodos = data.todos.filter((t) => !t.done);
 
-  const agendaHtml = data.agenda
+  const agendaHtml = data.agendaEvents
     .map(
       (item, i) =>
-        `<li><span class="item-num">${i + 1}.</span>${esc(item)}</li>`
+        `<li><span class="item-num">${i + 1}.</span><span><strong>${esc(item.startLabel)}-${esc(item.endLabel)}</strong> ${esc(item.title)} <em>(${esc(item.calendarName)})</em></span></li>`
     )
     .join("\n          ");
 
@@ -93,6 +101,47 @@ export function renderHtml(data: TemplateData): string {
   const followUpsHtml = data.followUps
     .map((f) => `<li>${esc(f)}</li>`)
     .join("\n          ");
+
+  const notesCaptureHtml = data.noteLines
+    .map((line) => `<li>${esc(line)}</li>`)
+    .join("\n          ");
+
+  const dayStartMinutes = 6 * 60;
+  const dayEndMinutes = 21 * 60;
+  const dayDurationMinutes = dayEndMinutes - dayStartMinutes;
+  const toMinutes = (iso: string): number => {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: "America/Los_Angeles",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false
+    }).formatToParts(new Date(iso));
+    const hour = Number(parts.find((p) => p.type === "hour")?.value ?? "0");
+    const minute = Number(parts.find((p) => p.type === "minute")?.value ?? "0");
+    return hour * 60 + minute;
+  };
+  const clamp = (value: number, min: number, max: number): number => Math.max(min, Math.min(max, value));
+  const calendarBlocks = data.agendaEvents
+    .map((event) => {
+      const start = clamp(toMinutes(event.startAt), dayStartMinutes, dayEndMinutes);
+      const end = clamp(toMinutes(event.endAt), dayStartMinutes, dayEndMinutes);
+      if (end <= start) return null;
+      const topPct = ((start - dayStartMinutes) / dayDurationMinutes) * 100;
+      const heightPct = ((end - start) / dayDurationMinutes) * 100;
+      return `<div class="calendar-event" style="top:${topPct}%;height:${heightPct}%"><div class="calendar-event-time">${esc(event.startLabel)}-${esc(event.endLabel)}</div><div class="calendar-event-title">${esc(event.title)}</div><div class="calendar-event-cal">${esc(event.calendarName)}</div></div>`;
+    })
+    .filter((v): v is string => !!v)
+    .join("\n          ");
+
+  const hourRows = Array.from({ length: 16 }, (_, i) => {
+    const hour = 6 + i;
+    const label = new Intl.DateTimeFormat("en-US", {
+      hour: "numeric",
+      hour12: true,
+      timeZone: "America/Los_Angeles"
+    }).format(new Date(Date.UTC(2020, 0, 1, hour, 0, 0)));
+    return `<div class="calendar-row"><span class="calendar-row-label">${esc(label)}</span><span class="calendar-row-line"></span></div>`;
+  }).join("\n          ");
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -156,7 +205,7 @@ export function renderHtml(data: TemplateData): string {
     .item-num { color: #888; min-width: 1.1em; flex-shrink: 0; }
 
     /* ── Todos ─────────────────────────────────────────────────────── */
-    .todos-grid { display: grid; grid-template-columns: 1fr 1fr; column-gap: 1.5em; }
+    .todos-grid { display: grid; grid-template-columns: 1fr 1fr; column-gap: 1.2em; }
     .todo-item {
       display: flex;
       align-items: flex-start;
@@ -228,6 +277,80 @@ export function renderHtml(data: TemplateData): string {
       display: flex;
       flex-direction: column;
     }
+
+    .captured-notes { list-style: disc; margin: 0 0 0.5em 1.1em; padding: 0; }
+    .captured-notes li { margin-bottom: 0.15em; font-size: 12.5pt; }
+
+    /* ── Day calendar page ─────────────────────────────────────────── */
+    .day-view-page {
+      break-before: page;
+      height: 9.95in;
+      display: flex;
+      flex-direction: column;
+    }
+    .day-view-title { font-size: 20pt; font-weight: 700; margin: 0 0 0.25em; }
+    .day-view-sub { font-size: 12pt; color: #666; margin: 0 0 0.45em; }
+    .calendar-shell {
+      position: relative;
+      border: 1px solid #bbb;
+      border-radius: 3px;
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow: hidden;
+      background: #fff;
+    }
+    .calendar-grid {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      grid-template-rows: repeat(16, 1fr);
+    }
+    .calendar-row {
+      display: grid;
+      grid-template-columns: 72px 1fr;
+      align-items: center;
+    }
+    .calendar-row-label {
+      font-size: 10.5pt;
+      color: #666;
+      text-align: right;
+      padding-right: 0.5em;
+    }
+    .calendar-row-line {
+      border-top: 1px solid #e5e5e5;
+      display: block;
+      height: 0;
+      margin-right: 0.5em;
+    }
+    .calendar-events {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: 76px;
+      right: 0.5em;
+    }
+    .calendar-event {
+      position: absolute;
+      left: 0.2em;
+      right: 0.2em;
+      border-left: 4px solid #333;
+      background: #f5f5f5;
+      border-radius: 3px;
+      padding: 0.18em 0.35em;
+      overflow: hidden;
+    }
+    .calendar-event-time { font-size: 9.8pt; color: #444; }
+    .calendar-event-title { font-size: 11.2pt; font-weight: 600; line-height: 1.2; }
+    .calendar-event-cal { font-size: 9.5pt; color: #666; }
+    .calendar-empty {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #777;
+      font-size: 13pt;
+    }
   </style>
 </head>
 <body>
@@ -280,13 +403,28 @@ export function renderHtml(data: TemplateData): string {
       : ""
   }
 
-  <!-- Inline notes (fixed block, ~8 lines) -->
+  <!-- Inline notes (quick capture list) -->
   <div class="section-gap" style="margin-top:0.4em">
-    <div class="section-title">Notes</div>
-    ${ruledLines(8)}
+    <div class="section-title">Captured Notes</div>
+    ${data.noteLines.length > 0 ? `<ul class="captured-notes">${notesCaptureHtml}</ul>` : `<p class="overview-text" style="color:#666">No note captures in this run window.</p>`}
   </div>
 
-  <!-- ═══ DEDICATED NOTES PAGE (always present) ═══ -->
+  <!-- ═══ PAGE 2: DAY CALENDAR VIEW (6AM-9PM) ═══ -->
+  <div class="day-view-page">
+    <div class="day-view-title">Day View</div>
+    <div class="day-view-sub">6:00 AM - 9:00 PM (Pacific)</div>
+    <div class="calendar-shell">
+      <div class="calendar-grid">
+        ${hourRows}
+      </div>
+      <div class="calendar-events">
+        ${calendarBlocks}
+      </div>
+      ${calendarBlocks.length === 0 ? '<div class="calendar-empty">No calendar events for today.</div>' : ''}
+    </div>
+  </div>
+
+  <!-- ═══ LAST FULL PAGE: NOTES ═══ -->
   <div class="notes-page">
     <div class="notes-page-title">Notes</div>
     <div class="notes-page-body">
