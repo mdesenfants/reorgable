@@ -102,15 +102,25 @@ export function renderHtml(data: TemplateData): string {
     )
     .join("\n          ");
 
-  const todosHtml = activeTodos
-    .map(
-      (todo) =>
-        `<div class="todo-item${todo.isSubtask ? " subtask" : ""}">` +
-        `<span class="checkbox"></span>` +
-        `<span>${esc(todo.task)}</span>` +
-        `</div>`
-    )
-    .join("\n          ");
+  // Build grouped todo HTML — parents and their subtasks stay together
+  const todoGroups: string[] = [];
+  let currentGroup: string[] = [];
+  for (const todo of activeTodos) {
+    if (!todo.isSubtask && currentGroup.length > 0) {
+      todoGroups.push(`<div class="todo-group">${currentGroup.join("\n")}</div>`);
+      currentGroup = [];
+    }
+    currentGroup.push(
+      `<div class="todo-item${todo.isSubtask ? " subtask" : ""}">` +
+      `<span class="checkbox"></span>` +
+      `<span>${esc(todo.task)}</span>` +
+      `</div>`
+    );
+  }
+  if (currentGroup.length > 0) {
+    todoGroups.push(`<div class="todo-group">${currentGroup.join("\n")}</div>`);
+  }
+  const todosHtml = todoGroups.join("\n          ");
 
   const notesCaptureHtml = data.noteLines
     .map((line) => `<li>${esc(line)}</li>`)
@@ -223,6 +233,7 @@ export function renderHtml(data: TemplateData): string {
 
     /* ── Todos ─────────────────────────────────────────────────────── */
     .todos-grid { display: grid; grid-template-columns: 1fr 1fr; column-gap: 1.2em; }
+    .todo-group { break-inside: avoid; }
     .todo-item {
       display: flex;
       align-items: flex-start;
@@ -250,6 +261,7 @@ export function renderHtml(data: TemplateData): string {
       width: 14px;
       height: 14px;
       min-width: 14px;
+      border-radius: 50%;
     }
     /* ── Weather ───────────────────────────────────────────────────── */
     
