@@ -18,7 +18,7 @@ set -euo pipefail
 #   REPORT_URL=https://... ./scripts/report-force.sh
 #   REPORT_API_TOKEN=... ./scripts/report-force.sh
 
-REPORT_URL="${REPORT_URL:-https://reorgable-report.matt-desenfants.workers.dev}"
+REPORT_URL="${REPORT_URL:?REPORT_URL is required. Set it to your deployed report worker URL, e.g. https://reorgable-report.<your-subdomain>.workers.dev}"
 CURL_TIMEOUT_SEC="${CURL_TIMEOUT_SEC:-120}"
 RUN_URL="${REPORT_URL%/}/run?force=true"
 

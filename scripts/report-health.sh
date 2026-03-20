@@ -8,7 +8,7 @@ set -euo pipefail
 #                    Default: https://reorgable-report.matt-desenfants.workers.dev
 #   REPORT_API_TOKEN Optional bearer token for protected deployments.
 
-REPORT_URL="${REPORT_URL:-https://reorgable-report.matt-desenfants.workers.dev}"
+REPORT_URL="${REPORT_URL:?REPORT_URL is required. Set it to your deployed report worker URL, e.g. https://reorgable-report.<your-subdomain>.workers.dev}"
 HEALTH_URL="${REPORT_URL%/}/health"
 
 echo "[report-health] GET ${HEALTH_URL}"

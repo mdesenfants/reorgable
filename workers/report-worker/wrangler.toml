@@ -9,7 +9,7 @@ crons = ["0 12 * * *", "0 13 * * *"]
 [[d1_databases]]
 binding = "DB"
 database_name = "daily_brief"
-database_id = "e6124eb3-8bc7-4712-898d-9ff5675115e3"
+database_id = "<your-d1-database-id>"  # from: wrangler d1 create daily_brief
 
 [[r2_buckets]]
 binding = "REPORT_BUCKET"
@@ -17,7 +17,7 @@ bucket_name = "daily-brief-reports"
 
 [[kv_namespaces]]
 binding = "STATE_KV"
-id = "aff13c4ce8b049fc8869a526fb392c85"
+id = "<your-kv-namespace-id>"  # from: wrangler kv namespace create STATE_KV
 
 [browser]
 binding = "BROWSER"

@@ -2,17 +2,20 @@
  * Smoke-tests the deployed report worker.
  *
  * Usage:
- *   npm run test:deployed                     # uses default prod URL
  *   WORKER_URL=https://… npm run test:deployed
+ *
+ * WORKER_URL is required — set it to your deployed report worker URL.
  *
  * Exit codes:
  *   0 — all checks passed
  *   1 — one or more checks failed
  */
 
-const BASE_URL =
-  process.env.WORKER_URL ??
-  "https://reorgable-report.matt-desenfants.workers.dev";
+const BASE_URL = process.env.WORKER_URL;
+if (!BASE_URL) {
+  console.error("Set WORKER_URL to your deployed report worker, e.g. https://reorgable-report.<your-subdomain>.workers.dev");
+  process.exit(1);
+}
 
 type CheckResult = { name: string; ok: boolean; detail?: string };
 

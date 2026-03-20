@@ -13,7 +13,7 @@
  * - Script property values override defaults below.
  */
 
-var DEFAULT_INGEST_URL = 'https://reorgable-ingest.matt-desenfants.workers.dev';
+var DEFAULT_INGEST_URL = 'https://reorgable-ingest.<your-subdomain>.workers.dev';
 var DEFAULT_TASKLIST_ID = '@default';
 
 function pushTasksToReorgable() {
