@@ -100,7 +100,8 @@ async function handleTaskIngest(request: Request, env: Env): Promise<Response> {
       relatedEmailSubject: payload.relatedEmailSubject ?? null,
       relatedEmailFrom: payload.relatedEmailFrom ?? null,
       relatedEmailMessageId: payload.relatedEmailMessageId ?? null,
-      externalId: payload.externalId ?? null
+      externalId: payload.externalId ?? null,
+      parentTaskId: payload.parentTaskId ?? null
     },
     payload,
     payload.externalId ?? JSON.stringify(payload),

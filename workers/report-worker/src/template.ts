@@ -14,7 +14,7 @@ export interface TemplateData {
     endLabel: string;
     calendarName: string;
   }>;
-  todos: Array<{ task: string; done: boolean }>;
+  todos: Array<{ task: string; done: boolean; isSubtask?: boolean }>;
   noteLines: string[];
 }
 
@@ -105,7 +105,7 @@ export function renderHtml(data: TemplateData): string {
   const todosHtml = activeTodos
     .map(
       (todo) =>
-        `<div class="todo-item">` +
+        `<div class="todo-item${todo.isSubtask ? " subtask" : ""}">` +
         `<span class="checkbox"></span>` +
         `<span>${esc(todo.task)}</span>` +
         `</div>`
@@ -237,7 +237,18 @@ export function renderHtml(data: TemplateData): string {
       border-radius: 1px;
       margin-top: 0.15em;
       flex-shrink: 0;
-    }    /* ── Weather ───────────────────────────────────────────────────── */
+    }
+    .todo-item.subtask {
+      padding-left: 1.4em;
+      font-size: 12pt;
+      color: #444;
+    }
+    .todo-item.subtask .checkbox {
+      width: 14px;
+      height: 14px;
+      min-width: 14px;
+    }
+    /* ── Weather ───────────────────────────────────────────────────── */
     
     .weather-badge {
       font-size: 13pt;

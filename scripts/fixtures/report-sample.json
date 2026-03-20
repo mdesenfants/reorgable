@@ -52,10 +52,13 @@
     ],
     "todos": [
       { "task": "Review open pull requests", "done": false },
+      { "task": "Check PR #42 comments", "done": false, "isSubtask": true },
+      { "task": "Approve PR #38", "done": true, "isSubtask": true },
       { "task": "Update project documentation", "done": true },
       { "task": "Reply to vendor email from last week", "done": false },
       { "task": "Run integration tests on staging", "done": false },
       { "task": "Triage new bug reports", "done": false },
+      { "task": "Label P1 issues", "done": false, "isSubtask": true },
       { "task": "Prepare agenda for Friday meeting", "done": true }
     ],
     "noteLines": [

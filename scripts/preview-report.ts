@@ -31,7 +31,7 @@ interface Fixture {
       endLabel: string;
       calendarName: string;
     }>;
-    todos: Array<{ task: string; done: boolean }>;
+    todos: Array<{ task: string; done: boolean; isSubtask?: boolean }>;
     noteLines: string[];
   };
 }

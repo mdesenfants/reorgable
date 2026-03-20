@@ -38,7 +38,8 @@ function pushTasksToReorgable() {
       relatedEmailSubject: emailContext.subject,
       relatedEmailFrom: emailContext.from,
       relatedEmailMessageId: emailContext.messageId,
-      externalId: t.id
+      externalId: t.id,
+      parentTaskId: t.parent || undefined
     };
 
     var response = UrlFetchApp.fetch(trimSlash(ingestUrl) + '/ingest/task', {

@@ -13,7 +13,8 @@ export const taskIngestSchema = z.object({
   relatedEmailSubject: z.string().min(1).optional(),
   relatedEmailFrom: z.string().email().optional(),
   relatedEmailMessageId: z.string().min(1).optional(),
-  externalId: z.string().optional()
+  externalId: z.string().optional(),
+  parentTaskId: z.string().optional()
 });
 
 export const documentIngestSchema = z.object({

@@ -42,6 +42,7 @@ type ItemMetadata = {
   relatedEmailFrom?: string;
   relatedEmailMessageId?: string;
   externalId?: string;
+  parentTaskId?: string;
 };
 
 type CalendarEvent = {
@@ -316,20 +317,44 @@ function buildCalendarAgenda(items: IngestedItem[], now: Date): CalendarEvent[] 
   return events;
 }
 
-function buildGoogleTaskTodos(items: IngestedItem[]): Array<{ task: string; done: boolean }> {
-  return items
+function buildGoogleTaskTodos(items: IngestedItem[]): Array<{ task: string; done: boolean; isSubtask: boolean }> {
+  const taskItems = items
     .filter((item) => item.source_type === "task")
     .map((item) => {
       const m = safeParseMetadata(item);
       return {
         task: item.title,
         done: m.isDone === true,
-        isGoogleTask: (m.tags ?? []).includes("google-tasks")
+        isGoogleTask: (m.tags ?? []).includes("google-tasks"),
+        externalId: m.externalId ?? null,
+        parentTaskId: m.parentTaskId ?? null
       };
     })
-    .filter((todo) => todo.isGoogleTask)
-    .map(({ task, done }) => ({ task, done }))
-    .slice(0, 20);
+    .filter((todo) => todo.isGoogleTask);
+
+  // Group subtasks under their parents
+  const parentIds = new Set(taskItems.map((t) => t.externalId).filter(Boolean));
+  const result: Array<{ task: string; done: boolean; isSubtask: boolean }> = [];
+
+  for (const todo of taskItems) {
+    if (todo.parentTaskId) continue; // skip subtasks in first pass
+    result.push({ task: todo.task, done: todo.done, isSubtask: false });
+    // append subtasks immediately after their parent
+    for (const sub of taskItems) {
+      if (sub.parentTaskId === todo.externalId) {
+        result.push({ task: sub.task, done: sub.done, isSubtask: true });
+      }
+    }
+  }
+
+  // Orphan subtasks (parent not in current batch) go at the end
+  for (const todo of taskItems) {
+    if (todo.parentTaskId && !parentIds.has(todo.parentTaskId)) {
+      result.push({ task: todo.task, done: todo.done, isSubtask: true });
+    }
+  }
+
+  return result.slice(0, 25);
 }
 
 function buildNoteLines(items: IngestedItem[]): string[] {
