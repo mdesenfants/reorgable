@@ -1,0 +1,31 @@
+{
+  "name": "reorgable",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "packages/shared",
+    "workers/ingest-worker",
+    "workers/report-worker",
+    "workers/email-worker"
+  ],
+  "scripts": {
+    "typecheck": "npm run --workspaces typecheck",
+    "dev:ingest": "npm run -w @reorgable/ingest-worker dev",
+    "dev:report": "npm run -w @reorgable/report-worker dev",
+    "dev:email": "npm run -w @reorgable/email-worker dev",
+    "remarkable:pair": "node ./scripts/remarkable-pair.mjs",
+    "preview": "tsx scripts/preview-report.ts",
+    "test:deployed": "tsx scripts/test-deployed.ts",
+    "test:ingest:note": "tsx scripts/test-ingest-note.ts",
+    "report:health": "bash ./scripts/report-health.sh",
+    "report:force": "bash ./scripts/report-force.sh",
+    "deploy:report": "npm run -w @reorgable/report-worker deploy && npm run test:deployed"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260317.1",
+    "puppeteer": "^24.0.0",
+    "tsx": "^4.19.3",
+    "typescript": "^5.9.3",
+    "wrangler": "^4.75.0"
+  }
+}

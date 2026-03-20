@@ -1,0 +1,40 @@
+{
+  "dateLabel": "Thu, March 19, 2026",
+  "weather": {
+    "tempF": 51,
+    "weatherCode": 63
+  },
+  "report": {
+    "overview": "Today is a packed day balancing product decisions and engineering follow-ups. The team shipped the beta feature yesterday and initial feedback is positive. A few open items on the infra side need resolution before end of week, and two vendor threads require responses. The afternoon is mostly free for focused work on the reorgable PDF iteration.",
+    "agenda": [
+      "9:00 AM – Engineering standup",
+      "10:00 AM – Q2 roadmap review with product",
+      "11:30 AM – 1:1 with Sarah",
+      "1:00 PM – Lunch break",
+      "2:00 PM – Deep work: reorgable PDF template",
+      "4:00 PM – Review infra PR #47",
+      "4:30 PM – Vendor contract call (Alex)",
+      "5:00 PM – EOD sync with remote team"
+    ],
+    "todos": [
+      { "task": "Review and merge open PRs before standup", "done": false },
+      { "task": "Send Q2 roadmap draft to stakeholders", "done": true },
+      { "task": "Update canary deployment config for worker", "done": false },
+      { "task": "Schedule dentist appointment", "done": false },
+      { "task": "Reply to vendor contract email from Tuesday", "done": false },
+      { "task": "Add retry logic to ingest worker error handling", "done": false },
+      { "task": "Confirm catering for Friday all-hands", "done": true },
+      { "task": "Review analytics dashboard numbers with PM", "done": false },
+      { "task": "Push docs update for API v2 endpoints", "done": false },
+      { "task": "Pay home internet bill", "done": false },
+      { "task": "File Q1 expense report", "done": false },
+      { "task": "Update reorgable README with preview instructions", "done": false }
+    ],
+    "followUps": [
+      "Email Alex re: licensing terms on the new SDK",
+      "Follow up with ops team on PagerDuty alert threshold ticket",
+      "Confirm reimbursement submission with finance",
+      "Ask Jordan about the Figma component library migration timeline"
+    ]
+  }
+}

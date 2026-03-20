@@ -1,0 +1,7 @@
+name = "reorgable-email"
+main = "src/index.ts"
+compatibility_date = "2026-03-19"
+
+[[r2_buckets]]
+binding = "RAW_BUCKET"
+bucket_name = "daily-brief-raw"

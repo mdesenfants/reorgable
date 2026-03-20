@@ -1,0 +1,12 @@
+name = "reorgable-ingest"
+main = "src/index.ts"
+compatibility_date = "2026-03-19"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "daily_brief"
+database_id = "e6124eb3-8bc7-4712-898d-9ff5675115e3"
+
+[[r2_buckets]]
+binding = "RAW_BUCKET"
+bucket_name = "daily-brief-raw"

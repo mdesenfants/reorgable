@@ -1,0 +1,23 @@
+name = "reorgable-report"
+main = "src/index.ts"
+compatibility_date = "2025-12-01"
+compatibility_flags = ["nodejs_compat"]
+
+[triggers]
+crons = ["0 12 * * *", "0 13 * * *"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "daily_brief"
+database_id = "e6124eb3-8bc7-4712-898d-9ff5675115e3"
+
+[[r2_buckets]]
+binding = "REPORT_BUCKET"
+bucket_name = "daily-brief-reports"
+
+[[kv_namespaces]]
+binding = "STATE_KV"
+id = "aff13c4ce8b049fc8869a526fb392c85"
+
+[browser]
+binding = "BROWSER"

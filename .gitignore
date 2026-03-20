@@ -1,0 +1,41 @@
+# Dependencies
+node_modules/
+
+# Build artifacts & local output
+dist/
+output/
+*.tsbuildinfo
+
+# Wrangler
+.wrangler/
+.dev.vars
+*.dev.vars
+
+# Environment files
+.env
+.env.*
+*.local
+
+# Logs
+*.log
+npm-debug.log*
+wrangler-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Editor
+.idea/
+.vscode/settings.json
+.vscode/launch.json
+*.swp
+*.swo
+*~
+
+# Secrets & keys
+*.pem
+*.key
+*.p12
+*.pfx
