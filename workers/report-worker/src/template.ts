@@ -162,6 +162,8 @@ export function renderHtml(data: TemplateData): string {
   <meta charset="UTF-8">
   <title>Daily Brief \u2013 ${esc(data.dateLabel)}</title>
   <style>
+    @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400..900;1,400..900&display=swap');
+
     /* ── Design System ─────────────────────────────────────────────── */
     @page {
       size: Letter;
@@ -171,7 +173,8 @@ export function renderHtml(data: TemplateData): string {
     html, body { margin: 0; padding: 0; }
 
     body {
-      font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+      font-family: 'Playfair Display', serif;
+      font-optical-sizing: auto;
       font-size: 14pt;
       line-height: 1.5;
       color: #111;
