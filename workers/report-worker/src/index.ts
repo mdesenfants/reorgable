@@ -206,23 +206,23 @@ function emailIsLinkedToTask(task: IngestedItem, email: IngestedItem): boolean {
 function filterItemsForBrief(items: IngestedItem[]): IngestedItem[] {
   const tasks = items.filter((item) => item.source_type === "task");
   const nonEmails = items.filter((item) => item.source_type !== "email");
-  const unreadInboxEmails = items.filter((item) => {
+  const inboxEmails = items.filter((item) => {
     if (item.source_type !== "email") return false;
     const metadata = safeParseMetadata(item);
-    return metadata.isUnread === true && metadata.inInbox === true;
+    return metadata.inInbox === true;
   });
 
   const openTasks = tasks.filter((item) => safeParseMetadata(item).isDone !== true);
   const matchedEmailIds = new Set<string>();
   for (const task of openTasks) {
-    for (const email of unreadInboxEmails) {
+    for (const email of inboxEmails) {
       if (emailIsLinkedToTask(task, email)) {
         matchedEmailIds.add(email.id);
       }
     }
   }
 
-  const linkedEmails = unreadInboxEmails.filter((email) => matchedEmailIds.has(email.id));
+  const linkedEmails = inboxEmails.filter((email) => matchedEmailIds.has(email.id));
   return [...nonEmails, ...linkedEmails].sort((a, b) => a.created_at.localeCompare(b.created_at));
 }
 

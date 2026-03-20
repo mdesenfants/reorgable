@@ -252,8 +252,8 @@ Ingest email metadata (used internally by the email-worker).
 
 ### Email inclusion workflow
 
-- The report worker only includes emails where `isUnread=true` and `inInbox=true`.
-- Those emails are only included when at least one open task (`isDone=false`) is linked to them.
+- The report worker only considers emails in the inbox (`inInbox=true`).
+- Those emails are included when at least one open task (`isDone=false`) is linked to them, regardless of `isUnread` state.
 - Linkage is strongest when tasks provide `relatedEmailMessageId` and/or `relatedEmailSubject` + `relatedEmailFrom`.
 - If no task matches an email, that email is excluded from the brief.
 
