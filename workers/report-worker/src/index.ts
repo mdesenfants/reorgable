@@ -334,24 +334,42 @@ function buildNoteLines(items: IngestedItem[]): string[] {
 }
 
 function buildGeminiPrompt(items: IngestedItem[], weather: WeatherSnapshot, dateLabel: string): string {
-  const compact = items.map((item) => ({
-    id: item.id,
-    type: item.source_type,
-    title: item.title,
-    text: item.summary_input,
-    metadata: safeParseMetadata(item),
-    createdAt: item.created_at
-  }));
+  const compact = items.map((item) => {
+    const meta = safeParseMetadata(item);
+    // Convert calendar timestamps to Pacific for the LLM
+    if (item.source_type === "calendar" && meta.startAt && meta.endAt) {
+      const startPT = formatPacificTime(meta.startAt);
+      const endPT = formatPacificTime(meta.endAt);
+      return {
+        id: item.id,
+        type: item.source_type,
+        title: item.title,
+        text: `${startPT} - ${endPT} (${meta.calendarName ?? "Calendar"}) ${item.title}`,
+        metadata: { ...meta, startAtPacific: startPT, endAtPacific: endPT },
+        createdAt: item.created_at
+      };
+    }
+    return {
+      id: item.id,
+      type: item.source_type,
+      title: item.title,
+      text: item.summary_input,
+      metadata: meta,
+      createdAt: item.created_at
+    };
+  });
 
   return [
     "You are generating a fixed-format daily brief.",
     `Date: ${dateLabel}`,
+    `Timezone: Pacific Time (America/Los_Angeles)`,
     `Weather: ${weather.tempF}F code ${weather.weatherCode}`,
     "Return JSON matching the schema exactly.",
     "Guidance:",
     "- overview: concise executive summary",
     "- followUps: communications or dependencies",
     "- focus on key dependencies and communication risk",
+    "- all times shown are already in Pacific Time",
     "Input items:",
     JSON.stringify(compact)
   ].join("\n");
