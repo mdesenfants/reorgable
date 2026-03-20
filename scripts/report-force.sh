@@ -70,7 +70,7 @@ if command -v jq >/dev/null 2>&1; then
   SKIPPED="$(jq -r '.skipped // empty' "$TMP_BODY")"
   REPORT_KEY="$(jq -r '.reportKey // empty' "$TMP_BODY")"
   SOURCE_COUNT="$(jq -r '.sourceCount // empty' "$TMP_BODY")"
-  CURSOR_USED="$(jq -r '.cursorUsed // empty' "$TMP_BODY")"
+  eURSOR_USED="$(jq -r '.cursorUsed // empty' "$TMP_BODY")"
   ARCHIVE_ATTEMPTED="$(jq -r '.archive.attempted // empty' "$TMP_BODY")"
   ARCHIVE_OK="$(jq -r '.archive.archived // empty' "$TMP_BODY")"
   ARCHIVE_KEY="$(jq -r '.archive.sourceKey // empty' "$TMP_BODY")"

@@ -134,13 +134,12 @@ export function renderHtml(data: TemplateData): string {
     .join("\n          ");
 
   const hourRows = Array.from({ length: 16 }, (_, i) => {
-    const hour = 6 + i;
-    const label = new Intl.DateTimeFormat("en-US", {
-      hour: "numeric",
-      hour12: true,
-      timeZone: "America/Los_Angeles"
-    }).format(new Date(Date.UTC(2020, 0, 1, hour, 0, 0)));
-    return `<div class="calendar-row"><span class="calendar-row-label">${esc(label)}</span><span class="calendar-row-line"></span></div>`;
+    const hour24 = 6 + i;
+    const period = hour24 >= 12 ? "PM" : "AM";
+    const hour12 = hour24 % 12 || 12;
+    const label = `${hour12} ${period}`;
+    const topPct = (i / 15) * 100;
+    return `<div class="calendar-row" style="top:${topPct.toFixed(2)}%"><span class="calendar-row-label">${esc(label)}</span><span class="calendar-row-line"></span></div>`;
   }).join("\n          ");
 
   return `<!DOCTYPE html>
@@ -302,10 +301,11 @@ export function renderHtml(data: TemplateData): string {
     .calendar-grid {
       position: absolute;
       inset: 0;
-      display: grid;
-      grid-template-rows: repeat(16, 1fr);
     }
     .calendar-row {
+      position: absolute;
+      left: 0;
+      right: 0;
       display: grid;
       grid-template-columns: 72px 1fr;
       align-items: center;
@@ -403,11 +403,7 @@ export function renderHtml(data: TemplateData): string {
       : ""
   }
 
-  <!-- Inline notes (quick capture list) -->
-  <div class="section-gap" style="margin-top:0.4em">
-    <div class="section-title">Captured Notes</div>
-    ${data.noteLines.length > 0 ? `<ul class="captured-notes">${notesCaptureHtml}</ul>` : `<p class="overview-text" style="color:#666">No note captures in this run window.</p>`}
-  </div>
+
 
   <!-- ═══ PAGE 2: DAY CALENDAR VIEW (6AM-9PM) ═══ -->
   <div class="day-view-page">
