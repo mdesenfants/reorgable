@@ -54,27 +54,21 @@ type CalendarEvent = {
 };
 
 const llmSummarySchema = z.object({
-  overview: z.string().min(1),
-  followUps: z.array(z.string().min(1)).max(10)
+  overview: z.string().min(1)
 });
 
 const llmSummaryJsonSchema = {
   type: "object",
   properties: {
-    overview: { type: "string", description: "2-5 sentence overview of today." },
-    followUps: {
-      type: "array",
-      items: { type: "string" },
-      maxItems: 10,
-      description: "Calls, emails, and follow-up actions."
-    }
+    overview: { type: "string", description: "2-5 sentence executive summary of today." }
   },
-  required: ["overview", "followUps"]
+  required: ["overview"]
 } as const;
 
 type WeatherSnapshot = {
   tempF: number;
   weatherCode: number;
+  hourly: Array<{ hour: number; tempF: number; weatherCode: number }>;
 };
 
 type ArchiveResult = {
@@ -141,7 +135,7 @@ const buildFileName = (date: Date): string => {
 
 async function fetchWeather(): Promise<WeatherSnapshot> {
   const url =
-    "https://api.open-meteo.com/v1/forecast?latitude=47.8209&longitude=-122.3151&current=temperature_2m,weather_code&temperature_unit=fahrenheit";
+    "https://api.open-meteo.com/v1/forecast?latitude=47.8209&longitude=-122.3151&current=temperature_2m,weather_code&hourly=temperature_2m,weather_code&temperature_unit=fahrenheit&timezone=America/Los_Angeles&forecast_days=1";
   const response = await fetch(url);
   if (!response.ok) {
     throw new Error(`Open-Meteo request failed: ${response.status}`);
@@ -149,11 +143,24 @@ async function fetchWeather(): Promise<WeatherSnapshot> {
 
   const body = (await response.json()) as {
     current?: { temperature_2m?: number; weather_code?: number };
+    hourly?: { time?: string[]; temperature_2m?: number[]; weather_code?: number[] };
   };
+
+  const hourly: WeatherSnapshot["hourly"] = [];
+  const times = body.hourly?.time ?? [];
+  const temps = body.hourly?.temperature_2m ?? [];
+  const codes = body.hourly?.weather_code ?? [];
+  for (let i = 0; i < times.length; i++) {
+    const hour = parseInt(times[i].split("T")[1].split(":")[0], 10);
+    if (hour >= 6 && hour <= 21) {
+      hourly.push({ hour, tempF: temps[i] ?? 0, weatherCode: codes[i] ?? -1 });
+    }
+  }
 
   return {
     tempF: body.current?.temperature_2m ?? 0,
-    weatherCode: body.current?.weather_code ?? -1
+    weatherCode: body.current?.weather_code ?? -1,
+    hourly,
   };
 }
 
@@ -344,7 +351,7 @@ function buildGeminiPrompt(items: IngestedItem[], weather: WeatherSnapshot, date
         id: item.id,
         type: item.source_type,
         title: item.title,
-        text: `${startPT} - ${endPT} (${meta.calendarName ?? "Calendar"}) ${item.title}`,
+        text: `${startPT} - ${endPT} (${meta.calendarName ?? "Calendar"}) ${item.title}\n${item.summary_input}`,
         metadata: { ...meta, startAtPacific: startPT, endAtPacific: endPT },
         createdAt: item.created_at
       };
@@ -366,8 +373,8 @@ function buildGeminiPrompt(items: IngestedItem[], weather: WeatherSnapshot, date
     `Weather: ${weather.tempF}F code ${weather.weatherCode}`,
     "Return JSON matching the schema exactly.",
     "Guidance:",
-    "- overview: concise executive summary",
-    "- followUps: communications or dependencies",
+    "- overview: concise executive summary covering key meetings, tasks, and priorities",
+    "- use the full content of emails and calendar events to understand what tasks entail",
     "- focus on key dependencies and communication risk",
     "- all times shown are already in Pacific Time",
     "Input items:",
@@ -437,7 +444,6 @@ async function renderHtmlToPdf(
     overview: string;
     agendaEvents: CalendarEvent[];
     todos: Array<{ task: string; done: boolean }>;
-    followUps: string[];
     noteLines: string[];
   }
 ): Promise<Uint8Array> {
@@ -447,7 +453,6 @@ async function renderHtmlToPdf(
     overview: args.overview,
     agendaEvents: args.agendaEvents,
     todos: args.todos,
-    followUps: args.followUps,
     noteLines: args.noteLines,
   });
 
@@ -578,7 +583,6 @@ async function runDailyReport(env: Env, opts?: { force?: boolean; lookbackHours?
     overview: llmSummary.overview,
     agendaEvents,
     todos,
-    followUps: llmSummary.followUps,
     noteLines,
   });
 
@@ -602,7 +606,6 @@ async function runDailyReport(env: Env, opts?: { force?: boolean; lookbackHours?
     filteredItems.length,
     JSON.stringify({
       overview: llmSummary.overview,
-      followUps: llmSummary.followUps,
       agendaEvents,
       todos,
       noteLines

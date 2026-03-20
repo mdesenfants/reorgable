@@ -4,7 +4,7 @@
 
 export interface TemplateData {
   dateLabel: string;
-  weather: { tempF: number; weatherCode: number };
+  weather: { tempF: number; weatherCode: number; hourly: Array<{ hour: number; tempF: number; weatherCode: number }> };
   overview: string;
   agendaEvents: Array<{
     title: string;
@@ -15,7 +15,6 @@ export interface TemplateData {
     calendarName: string;
   }>;
   todos: Array<{ task: string; done: boolean }>;
-  followUps: string[];
   noteLines: string[];
 }
 
@@ -61,6 +60,21 @@ function weatherLabel(code: number, tempF: number): string {
   return `${tempF.toFixed(0)}°F · ${desc}`;
 }
 
+const WMO_EMOJI: Partial<Record<number, string>> = {
+  0: "☀️", 1: "🌤️", 2: "⛅", 3: "☁️",
+  45: "🌫️", 48: "🌫️",
+  51: "🌦️", 53: "🌦️", 55: "🌦️",
+  61: "🌧️", 63: "🌧️", 65: "🌧️",
+  71: "🌨️", 73: "🌨️", 75: "🌨️", 77: "🌨️",
+  80: "🌧️", 81: "🌧️", 82: "🌧️",
+  85: "🌨️", 86: "🌨️",
+  95: "⛈️", 96: "⛈️", 99: "⛈️",
+};
+
+function wmoEmoji(code: number): string {
+  return WMO_EMOJI[code] ?? "❓";
+}
+
 /**
  * Generate ruled lines as individual <hr> elements inside a custom element.
  * Real DOM nodes sidestep the Chromium PDF bug where repeating-linear-gradient
@@ -96,10 +110,6 @@ export function renderHtml(data: TemplateData): string {
         `<span>${esc(todo.task)}</span>` +
         `</div>`
     )
-    .join("\n          ");
-
-  const followUpsHtml = data.followUps
-    .map((f) => `<li>${esc(f)}</li>`)
     .join("\n          ");
 
   const notesCaptureHtml = data.noteLines
@@ -139,7 +149,11 @@ export function renderHtml(data: TemplateData): string {
     const hour12 = hour24 % 12 || 12;
     const label = `${hour12} ${period}`;
     const topPct = (i / 15) * 100;
-    return `<div class="calendar-row" style="top:${topPct.toFixed(2)}%"><span class="calendar-row-label">${esc(label)}</span><span class="calendar-row-line"></span></div>`;
+    const hw = data.weather.hourly.find((w) => w.hour === hour24);
+    const weatherBit = hw
+      ? `<br><span class="hour-weather">${wmoEmoji(hw.weatherCode)} ${hw.tempF.toFixed(0)}°</span>`
+      : "";
+    return `<div class="calendar-row" style="top:${topPct.toFixed(2)}%"><span class="calendar-row-label">${esc(label)}${weatherBit}</span><span class="calendar-row-line"></span></div>`;
   }).join("\n          ");
 
   return `<!DOCTYPE html>
@@ -188,6 +202,7 @@ export function renderHtml(data: TemplateData): string {
       border: 1px solid #bbb;
       border-radius: 3px;
       padding: 0.5em 0.7em;
+      break-inside: avoid;
     }
 
     .overview-text { font-size: 14pt; line-height: 1.5; margin: 0; }
@@ -222,13 +237,8 @@ export function renderHtml(data: TemplateData): string {
       border-radius: 1px;
       margin-top: 0.15em;
       flex-shrink: 0;
-    }
-
-    /* ── Follow-ups ────────────────────────────────────────────────── */
-    ul.followups { list-style: disc; padding-left: 1.2em; margin: 0; }
-    ul.followups li { margin-bottom: 0.15em; font-size: 14pt; }
-
-    /* ── Weather ───────────────────────────────────────────────────── */
+    }    /* ── Weather ───────────────────────────────────────────────────── */
+    
     .weather-badge {
       font-size: 13pt;
       color: #555;
@@ -236,6 +246,12 @@ export function renderHtml(data: TemplateData): string {
       border: 1px solid #ddd;
       border-radius: 3px;
       padding: 0.1em 0.5em;
+    }
+    .hour-weather {
+      display: block;
+      font-size: 8pt;
+      color: #777;
+      line-height: 1.2;
     }
 
     /* ── Ruled lines ───────────────────────────────────────────────── */
@@ -392,18 +408,6 @@ export function renderHtml(data: TemplateData): string {
     <div class="todos-grid">
         ${todosHtml}
     </div>
-  </div>`
-      : ""
-  }
-
-  <!-- Follow-Ups -->
-  ${
-    data.followUps.length > 0
-      ? `<div class="panel section-gap">
-    <div class="section-title">Follow-Ups</div>
-    <ul class="followups">
-        ${followUpsHtml}
-    </ul>
   </div>`
       : ""
   }
