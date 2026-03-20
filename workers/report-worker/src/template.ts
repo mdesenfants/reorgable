@@ -128,7 +128,7 @@ export function renderHtml(data: TemplateData): string {
       if (end <= start) return null;
       const topPct = ((start - dayStartMinutes) / dayDurationMinutes) * 100;
       const heightPct = ((end - start) / dayDurationMinutes) * 100;
-      return `<div class="calendar-event" style="top:${topPct}%;height:${heightPct}%"><div class="calendar-event-time">${esc(event.startLabel)}-${esc(event.endLabel)}</div><div class="calendar-event-title">${esc(event.title)}</div><div class="calendar-event-cal">${esc(event.calendarName)}</div></div>`;
+      return `<div class="calendar-event" style="top:${topPct}%;height:${heightPct}%">${esc(event.title)} <span class="calendar-event-sep">|</span> ${esc(event.startLabel)}-${esc(event.endLabel)} <span class="calendar-event-sep">|</span> ${esc(event.calendarName)}</div>`;
     })
     .filter((v): v is string => !!v)
     .join("\n          ");
@@ -339,9 +339,14 @@ export function renderHtml(data: TemplateData): string {
       padding: 0.18em 0.35em;
       overflow: hidden;
     }
-    .calendar-event-time { font-size: 9.8pt; color: #444; }
-    .calendar-event-title { font-size: 11.2pt; font-weight: 600; line-height: 1.2; }
-    .calendar-event-cal { font-size: 9.5pt; color: #666; }
+    .calendar-event {
+      font-size: 10pt;
+      font-weight: 600;
+      line-height: 1.2;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+    .calendar-event-sep { color: #999; font-weight: 400; margin: 0 0.15em; }
     .calendar-empty {
       position: absolute;
       inset: 0;
