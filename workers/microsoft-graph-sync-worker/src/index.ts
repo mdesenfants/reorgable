@@ -524,7 +524,7 @@ async function runSync(env: Env): Promise<{
       ok: false,
       tasks: { pushed: 0, failed: 0 },
       calendar: { pushed: 0, failed: 0 },
-      error: message,
+      error: "Sync failed",
     };
   }
 }
