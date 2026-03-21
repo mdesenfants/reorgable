@@ -6,6 +6,8 @@ export interface TemplateData {
   dateLabel: string;
   weather: { tempF: number; weatherCode: number; hourly: Array<{ hour: number; tempF: number; weatherCode: number }> };
   overview: string;
+  deltaSinceYesterday: string;
+  followUps: string[];
   agendaEvents: Array<{
     title: string;
     startAt: string;
@@ -91,6 +93,80 @@ function ruledLinesFill(count: number): string {
   return `<ruled-lines class="fill">${lines}</ruled-lines>`;
 }
 
+// ── Reference appendix types & renderer ──────────────────────────────
+
+export interface ReferenceItem {
+  source: string;
+  title: string;
+  body: string;
+  meta?: string;
+}
+
+export interface ReferenceTemplateData {
+  dateLabel: string;
+  items: ReferenceItem[];
+}
+
+export function renderReferenceHtml(data: ReferenceTemplateData): string {
+  const itemsHtml = data.items
+    .map(
+      (item) =>
+        `<div class="ref-item">
+          <div class="ref-source">${esc(item.source)}</div>
+          <div class="ref-title">${esc(item.title)}</div>
+          ${item.meta ? `<div class="ref-meta">${esc(item.meta)}</div>` : ""}
+          <div class="ref-body">${esc(item.body)}</div>
+        </div>`
+    )
+    .join("\n    ");
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Reference \u2013 ${esc(data.dateLabel)}</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400..900;1,400..900&display=swap');
+    @page { size: Letter; margin: 0.55in 0.65in 0.5in; }
+    html, body { margin: 0; padding: 0; }
+    body {
+      font-family: 'Playfair Display', serif;
+      font-optical-sizing: auto;
+      font-size: 12pt;
+      line-height: 1.5;
+      color: #111;
+    }
+    h1 { font-size: 24pt; font-weight: 700; margin: 0 0 0.1em; }
+    .date-sub { font-size: 12pt; color: #666; margin: 0 0 0.5em; }
+    .divider { border: none; border-top: 1px solid #999; margin: 0.3em 0 0.6em; }
+    .ref-item {
+      break-inside: avoid;
+      border: 1px solid #ccc;
+      border-radius: 3px;
+      padding: 0.5em 0.7em;
+      margin-bottom: 0.5em;
+    }
+    .ref-source {
+      font-size: 9pt;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: #888;
+      margin-bottom: 0.15em;
+    }
+    .ref-title { font-size: 13pt; font-weight: 700; margin-bottom: 0.15em; }
+    .ref-meta { font-size: 10pt; color: #666; font-style: italic; margin-bottom: 0.25em; }
+    .ref-body { font-size: 11pt; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <h1>Reference</h1>
+  <div class="date-sub">${esc(data.dateLabel)}</div>
+  <hr class="divider">
+  ${itemsHtml}
+</body>
+</html>`;
+}
+
 export function renderHtml(data: TemplateData): string {
   // Keep only active tasks for the check-list panel.
   const activeTodos = data.todos.filter((t) => !t.done);
@@ -124,6 +200,10 @@ export function renderHtml(data: TemplateData): string {
 
   const notesCaptureHtml = data.noteLines
     .map((line) => `<li>${esc(line)}</li>`)
+    .join("\n          ");
+
+  const followUpsHtml = data.followUps
+    .map((line) => `<li><span>${esc(line)}</span></li>`)
     .join("\n          ");
 
   const dayStartMinutes = 6 * 60;
@@ -273,6 +353,16 @@ export function renderHtml(data: TemplateData): string {
       border-radius: 3px;
       padding: 0.1em 0.5em;
     }
+    .delta-text { font-size: 12pt; color: #555; margin: 0 0 0.1em; font-style: italic; }
+    .follow-ups { list-style: none; padding: 0; margin: 0; }
+    .follow-ups li {
+      display: flex;
+      gap: 0.35em;
+      line-height: 1.45;
+      margin-bottom: 0.15em;
+      font-size: 13pt;
+    }
+    .follow-ups li::before { content: "→"; color: #888; flex-shrink: 0; }
     .hour-weather {
       display: block;
       font-size: 8pt;
@@ -416,6 +506,7 @@ export function renderHtml(data: TemplateData): string {
   <div class="panel section-gap">
     <div class="section-title">Overview</div>
     <p class="overview-text">${esc(data.overview)}</p>
+    <p class="delta-text">${esc(data.deltaSinceYesterday)}</p>
   </div>
 
   <!-- Day Agenda -->
@@ -434,6 +525,18 @@ export function renderHtml(data: TemplateData): string {
     <div class="todos-grid">
         ${todosHtml}
     </div>
+  </div>`
+      : ""
+  }
+
+  <!-- Follow-ups -->
+  ${
+    data.followUps.length > 0
+      ? `<div class="panel section-gap">
+    <div class="section-title">Follow-ups</div>
+    <ul class="follow-ups">
+        ${followUpsHtml}
+    </ul>
   </div>`
       : ""
   }

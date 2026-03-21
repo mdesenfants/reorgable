@@ -2,12 +2,25 @@
 
 A Cloudflare-based personal daily-briefing system. Throughout the day, tasks, notes, and emails are ingested and stored. Each morning, a scheduled worker summarizes everything with Gemini, renders a two-page PDF, and uploads it to your reMarkable tablet — ready to read with your coffee.
 
+## Quickstart (recommended)
+
+Run the guided setup script from the repo root:
+
+```bash
+bash setup.sh
+```
+
+The script walks you through prerequisites and authentication, creates or reuses Cloudflare resources, runs migrations, sets secrets, deploys workers, optionally configures Microsoft Graph sync, and runs smoke tests.
+
+If you prefer a manual setup, continue with the "First-time setup" section below.
+
 ## How it works
 
 ```
 Google Tasks ──► Google Apps Script ──┐
 curl / shortcut ──────────────────────┼──► ingest-worker (D1 + R2)
-Email Routing ──► email-worker ────────┘
+Email Routing ──► email-worker ────────┤
+Microsoft Graph ◄─► ms-graph-sync ─────┘
                                             │
                                      (cron: 12:00 UTC)
                                             │
@@ -20,12 +33,13 @@ Email Routing ──► email-worker ────────┘
                                       reMarkable cloud upload
 ```
 
-Three Cloudflare Workers:
+Four Cloudflare Workers:
 
 | Worker | Name | Purpose |
 |---|---|---|
 | `workers/ingest-worker` | `reorgable-ingest` | Authenticated REST API for all ingestion |
 | `workers/email-worker` | `reorgable-email` | Receives Cloudflare Email Routing events, stores EML to R2, forwards metadata to ingest |
+| `workers/microsoft-graph-sync-worker` | `reorgable-ms-graph-sync` | Syncs Microsoft To Do, flagged emails, and Outlook calendar to ingest |
 | `workers/report-worker` | `reorgable-report` | Scheduled report pipeline: summarize → render → upload |
 
 Cloudflare resources used:
@@ -37,6 +51,97 @@ Cloudflare resources used:
 | R2 bucket | `daily-brief-reports` | report-worker (rendered PDFs) |
 | KV namespace | `STATE_KV` | report-worker (last run cursor) |
 | Browser Rendering | — | report-worker (Puppeteer PDF render) |
+
+## A day in the life
+
+Here's how the system works end-to-end on a typical day.
+
+### The night before (anytime)
+
+You jot down a thought before bed:
+
+```bash
+npm run note "Ask Alex about the Q2 budget spreadsheet"
+```
+
+The `quick-note.sh` script POSTs to the ingest worker's `/ingest/note` endpoint. The note lands in D1, timestamped and ready for tomorrow's report.
+
+### Every 15 minutes — source sync
+
+Two automated syncs keep the ingest database fresh throughout the day:
+
+**Google Apps Script** (runs on a timer you set, typically every 15 min):
+- Pushes incomplete Google Tasks to `/ingest/task`
+- Pushes today's Google Calendar events (all calendars) to `/ingest/calendar`
+
+**Microsoft Graph sync worker** (cron at `11:00 UTC` / 4 AM Pacific):
+- Pulls Microsoft To Do tasks from all lists
+- Pulls flagged Outlook emails
+- Pulls today's Outlook calendar events
+- Forwards everything to the ingest worker
+
+Meanwhile, emails arriving at your Cloudflare Email Routing address are caught by the email-worker, which stores the raw EML in R2 and forwards metadata to the ingest worker.
+
+All of this accumulates in D1. Deduplication by `externalId` means repeated syncs update in place rather than creating duplicates.
+
+### 5:00 AM Pacific — the report runs
+
+The report-worker has cron triggers at `12:00 UTC` and `13:00 UTC` (the second is a safety retry). A Pacific-time guard in code ensures it only fires at 5 AM local, handling DST automatically.
+
+Here's what happens:
+
+1. **Gather items** — query D1 for everything ingested since the last run
+2. **Filter for relevance** — only inbox emails linked to open tasks are included; completed tasks are excluded
+3. **Build structured sections**:
+   - Calendar agenda (today's events, sorted by start time)
+   - Conflict detection (overlapping meetings are flagged)
+   - To-do checklist (open tasks from Google Tasks / Microsoft To Do)
+   - Notes (quick captures from the note endpoint)
+4. **Fetch context** — pull yesterday's overview and follow-ups from the last `report_runs` row
+5. **Call Gemini** — send the full item list, weather forecast, yesterday's context, and any calendar conflicts to the LLM with a structured JSON schema. Gemini returns:
+   - A 2–5 sentence executive overview
+   - A delta summary (what changed since yesterday)
+   - Concrete follow-up actions (unresolved items from yesterday carry forward)
+6. **Render the PDF** — Puppeteer prints a multi-page Letter-format document:
+   - **Page 1+**: header with weather, overview, delta text, day agenda, to-do checklist with checkboxes, follow-ups panel
+   - **Day View page**: a visual 6 AM–9 PM calendar with event blocks and hourly weather
+   - **Notes page**: any captured notes plus ruled lines for handwriting
+7. **Render a reference appendix** — if there are emails or notes with longer bodies, a second PDF is generated with the full text of each item
+8. **Store in R2** — both PDFs are saved to the reports bucket
+9. **Upload to reMarkable** — the main brief and (if present) the reference doc are uploaded together to the `/Daily Briefings` folder on the tablet
+10. **Archive yesterday's brief** — the previous day's PDF is re-uploaded to `/Briefs` for history, then marked so it won't be archived again
+11. **Record the run** — D1 gets a `report_runs` row with the summary JSON, upload status, and reMarkable document ID; a `brief_engagement` row tracks the uploaded doc
+
+### 5:01 AM — it's on your tablet
+
+Pick up your reMarkable. The daily brief is in `/Daily Briefings`. You get:
+
+- A quick-scan overview of the day ahead
+- A visual timeline showing where your meetings fall (and if any overlap)
+- A checkbox list of open tasks you can tick off with the pen
+- Follow-up items that carried over from yesterday
+- A notes page for meeting scribbles
+
+The reference appendix sits alongside it if you need the full text of an email thread or a longer note.
+
+### During the day — the feedback loop
+
+As you work through tasks in Google Tasks or Microsoft To Do, completions flow back through the next sync cycle. The system also supports write-back to Microsoft Graph:
+
+- `POST /tasks/create` on the MS Graph worker creates a new To Do task
+- `POST /tasks/complete` marks one as done
+
+You can check whether the brief is still on the device:
+
+```bash
+curl -X POST https://<report-worker>/check-briefs
+```
+
+This queries the reMarkable cloud for document presence. If you've deleted or archived the brief from the tablet, the system records that — a signal the brief was consumed.
+
+### Tomorrow morning — the cycle repeats
+
+When the next brief generates, Gemini sees yesterday's overview and follow-ups. Unresolved items carry forward automatically. The delta summary highlights what changed overnight. Yesterday's PDF moves to `/Briefs` for archival.
 
 ## Project layout
 
@@ -115,6 +220,9 @@ Update the `id` in `workers/report-worker/wrangler.toml` with the ID printed abo
 
 ```bash
 wrangler d1 execute daily_brief --remote --file migrations/0001_init.sql
+wrangler d1 execute daily_brief --remote --file migrations/0002_add_note_source.sql
+wrangler d1 execute daily_brief --remote --file migrations/0003_add_calendar_source.sql
+wrangler d1 execute daily_brief --remote --file migrations/0004_add_brief_engagement.sql
 ```
 
 ### 5. Set secrets
@@ -151,7 +259,31 @@ printf "%s" "gemini-3-flash-preview" | wrangler secret put GEMINI_MODEL \
   --config workers/report-worker/wrangler.toml
 ```
 
-### 6. Pair reMarkable (optional)
+### 6. Set up Microsoft Graph sync (optional)
+
+This worker syncs Microsoft To Do tasks, flagged Outlook emails, and calendar events into the brief. It requires an Entra ID (Azure AD) app registration with `Tasks.Read.All` and `Calendars.Read` application permissions.
+
+Run the helper script (requires the [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli)):
+
+```bash
+az login
+bash scripts/setup-ms-app.sh
+```
+
+The script creates the app registration, grants permissions, and prints the four values you need. Set them as secrets along with the ingest URL and token:
+
+```bash
+printf "%s" "<app-id>"       | wrangler secret put MS_CLIENT_ID     -c workers/microsoft-graph-sync-worker/wrangler.toml
+printf "%s" "<secret>"       | wrangler secret put MS_CLIENT_SECRET -c workers/microsoft-graph-sync-worker/wrangler.toml
+printf "%s" "<tenant-id>"    | wrangler secret put MS_TENANT_ID     -c workers/microsoft-graph-sync-worker/wrangler.toml
+printf "%s" "<user-obj-id>" | wrangler secret put MS_USER_ID       -c workers/microsoft-graph-sync-worker/wrangler.toml
+printf "%s" "<ingest-url>"   | wrangler secret put INGEST_URL       -c workers/microsoft-graph-sync-worker/wrangler.toml
+printf "%s" "<ingest-token>" | wrangler secret put INGEST_API_TOKEN -c workers/microsoft-graph-sync-worker/wrangler.toml
+```
+
+The worker runs on a daily cron (11:00 UTC) and also exposes `POST /tasks/create` and `POST /tasks/complete` for the report worker to write back follow-ups.
+
+### 7. Pair reMarkable (optional)
 
 Get a one-time code from [my.remarkable.com](https://my.remarkable.com) → Device management → Connect a device.
 
@@ -166,21 +298,22 @@ printf "%s" "<device-token>" | wrangler secret put REMARKABLE_DEVICE_TOKEN \
   --config workers/report-worker/wrangler.toml
 ```
 
-### 7. Deploy
+### 8. Deploy
 
 ```bash
 wrangler deploy --config workers/ingest-worker/wrangler.toml
 wrangler deploy --config workers/email-worker/wrangler.toml
+wrangler deploy --config workers/microsoft-graph-sync-worker/wrangler.toml   # skip if you skipped step 6
 npm run deploy:report
 ```
 
 `deploy:report` uses `--minify` for the report worker because its bundle is large.
 
-### 8. Configure Email Routing (optional)
+### 9. Configure Email Routing (optional)
 
 In the Cloudflare dashboard, add an Email Routing rule that forwards incoming mail to your `reorgable-email` worker. Set a filter address (e.g. `brief@yourdomain.com`) that you can forward to from other services.
 
-### 9. Smoke test
+### 10. Smoke test
 
 ```bash
 INGEST_URL=https://<your-ingest-worker>.workers.dev \

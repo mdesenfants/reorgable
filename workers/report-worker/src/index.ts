@@ -1,7 +1,7 @@
 import puppeteer, { type BrowserWorker } from "@cloudflare/puppeteer";
-import { z } from "zod";
+import { reportOutputSchema, reportOutputJsonSchema, type ReportOutput } from "@reorgable/shared";
 import { makeRemarkableAdapter } from "./remarkable/adapter-factory";
-import { renderHtml } from "./template";
+import { renderHtml, renderReferenceHtml, type ReferenceItem } from "./template";
 
 type Env = {
   DB: D1Database;
@@ -54,17 +54,7 @@ type CalendarEvent = {
   calendarName: string;
 };
 
-const llmSummarySchema = z.object({
-  overview: z.string().min(1)
-});
 
-const llmSummaryJsonSchema = {
-  type: "object",
-  properties: {
-    overview: { type: "string", description: "2-5 sentence executive summary of today." }
-  },
-  required: ["overview"]
-} as const;
 
 type WeatherSnapshot = {
   tempF: number;
@@ -178,6 +168,18 @@ async function getItemsSinceCursor(env: Env, cursor: string): Promise<IngestedIt
   return results ?? [];
 }
 
+async function getOutstandingTasks(env: Env): Promise<IngestedItem[]> {
+  const { results } = await env.DB.prepare(
+    `SELECT id, source_type, title, summary_input, metadata_json, created_at
+     FROM items
+     WHERE source_type = 'task'
+       AND COALESCE(json_extract(metadata_json, '$.isDone'), 0) != 1
+     ORDER BY created_at ASC`
+  ).all<IngestedItem>();
+
+  return results ?? [];
+}
+
 async function getItemsSinceLastRun(
   env: Env,
   cursorOverride?: string
@@ -185,7 +187,19 @@ async function getItemsSinceLastRun(
   const fallbackCursor = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
   const cursor = cursorOverride ?? (await env.STATE_KV.get("last_report_at")) ?? fallbackCursor;
 
-  return { items: await getItemsSinceCursor(env, cursor), cursor };
+  const [recentItems, outstandingTasks] = await Promise.all([
+    getItemsSinceCursor(env, cursor),
+    getOutstandingTasks(env)
+  ]);
+
+  const merged = new Map<string, IngestedItem>();
+  for (const item of recentItems) merged.set(item.id, item);
+  for (const item of outstandingTasks) merged.set(item.id, item);
+
+  return {
+    items: Array.from(merged.values()).sort((a, b) => a.created_at.localeCompare(b.created_at)),
+    cursor
+  };
 }
 
 function safeParseMetadata(item: IngestedItem): ItemMetadata {
@@ -242,6 +256,25 @@ function emailIsLinkedToTask(task: IngestedItem, email: IngestedItem): boolean {
   const taskTokens = tokenize(taskText);
   const emailTokens = tokenize(emailText);
   return overlapCount(taskTokens, emailTokens) >= 2;
+}
+
+function buildReferenceItems(items: IngestedItem[]): ReferenceItem[] {
+  return items
+    .filter((item) => item.source_type === "email" || item.source_type === "note")
+    .map((item) => {
+      const m = safeParseMetadata(item);
+      const meta =
+        item.source_type === "email"
+          ? [m.from && `From: ${m.from}`, m.sentAt && `Sent: ${m.sentAt}`].filter(Boolean).join(" · ")
+          : undefined;
+      return {
+        source: item.source_type,
+        title: item.title,
+        body: item.summary_input.slice(0, 2000),
+        meta: meta || undefined,
+      };
+    })
+    .slice(0, 50);
 }
 
 function filterItemsForBrief(items: IngestedItem[]): IngestedItem[] {
@@ -317,20 +350,54 @@ function buildCalendarAgenda(items: IngestedItem[], now: Date): CalendarEvent[] 
   return events;
 }
 
+type CalendarConflict = {
+  eventA: string;
+  eventB: string;
+  overlapMinutes: number;
+};
+
+function detectCalendarConflicts(events: CalendarEvent[]): CalendarConflict[] {
+  const conflicts: CalendarConflict[] = [];
+  for (let i = 0; i < events.length; i++) {
+    for (let j = i + 1; j < events.length; j++) {
+      const a = events[i];
+      const b = events[j];
+      const aStart = new Date(a.startAt).getTime();
+      const aEnd = new Date(a.endAt).getTime();
+      const bStart = new Date(b.startAt).getTime();
+      const bEnd = new Date(b.endAt).getTime();
+
+      const overlapStart = Math.max(aStart, bStart);
+      const overlapEnd = Math.min(aEnd, bEnd);
+      if (overlapStart < overlapEnd) {
+        conflicts.push({
+          eventA: a.title,
+          eventB: b.title,
+          overlapMinutes: Math.round((overlapEnd - overlapStart) / 60_000),
+        });
+      }
+    }
+  }
+  return conflicts;
+}
+
+const TASK_SOURCE_TAGS = ["google-tasks", "microsoft-todo", "microsoft-flagged-email"];
+
 function buildGoogleTaskTodos(items: IngestedItem[]): Array<{ task: string; done: boolean; isSubtask: boolean }> {
   const taskItems = items
     .filter((item) => item.source_type === "task")
     .map((item) => {
       const m = safeParseMetadata(item);
+      const tags = m.tags ?? [];
       return {
         task: item.title,
         done: m.isDone === true,
-        isGoogleTask: (m.tags ?? []).includes("google-tasks"),
+        isKnownTask: tags.some((t) => TASK_SOURCE_TAGS.includes(t)),
         externalId: m.externalId ?? null,
         parentTaskId: m.parentTaskId ?? null
       };
     })
-    .filter((todo) => todo.isGoogleTask);
+    .filter((todo) => todo.isKnownTask);
 
   // Group subtasks under their parents
   const parentIds = new Set(taskItems.map((t) => t.externalId).filter(Boolean));
@@ -365,7 +432,7 @@ function buildNoteLines(items: IngestedItem[]): string[] {
     .slice(0, 18);
 }
 
-function buildGeminiPrompt(items: IngestedItem[], weather: WeatherSnapshot, dateLabel: string): string {
+function buildGeminiPrompt(items: IngestedItem[], weather: WeatherSnapshot, dateLabel: string, previousOverview?: string, previousFollowUps?: string[], conflicts?: CalendarConflict[]): string {
   const compact = items.map((item) => {
     const meta = safeParseMetadata(item);
     // Convert calendar timestamps to Pacific for the LLM
@@ -391,7 +458,7 @@ function buildGeminiPrompt(items: IngestedItem[], weather: WeatherSnapshot, date
     };
   });
 
-  return [
+  const lines = [
     "You are generating a fixed-format daily brief.",
     `Date: ${dateLabel}`,
     `Timezone: Pacific Time (America/Los_Angeles)`,
@@ -399,12 +466,34 @@ function buildGeminiPrompt(items: IngestedItem[], weather: WeatherSnapshot, date
     "Return JSON matching the schema exactly.",
     "Guidance:",
     "- overview: concise executive summary covering key meetings, tasks, and priorities",
+    "- deltaSinceYesterday: summarize what changed since yesterday — new items added, tasks resolved, deadlines shifted. If no previous context is provided, note that this is the first brief.",
+    "- followUps: list specific calls, emails, messages, or actions to take today. Be concrete — name the person, topic, or deliverable.",
     "- use the full content of emails and calendar events to understand what tasks entail",
     "- focus on key dependencies and communication risk",
     "- all times shown are already in Pacific Time",
-    "Input items:",
-    JSON.stringify(compact)
-  ].join("\n");
+  ];
+
+  if (previousOverview) {
+    lines.push("", "Yesterday's brief overview (for delta comparison):", previousOverview);
+  }
+
+  if (previousFollowUps?.length) {
+    lines.push("", "Yesterday's follow-ups (check if these were addressed; carry forward unresolved ones):");
+    for (const item of previousFollowUps) {
+      lines.push(`- ${item}`);
+    }
+  }
+
+  if (conflicts?.length) {
+    lines.push("", "⚠ Calendar conflicts detected (warn the user about these overlapping meetings):");
+    for (const c of conflicts) {
+      lines.push(`- "${c.eventA}" and "${c.eventB}" overlap by ${c.overlapMinutes} minutes`);
+    }
+  }
+
+  lines.push("", "Input items:", JSON.stringify(compact));
+
+  return lines.join("\n");
 }
 
 function extractJsonObject(text: string): string {
@@ -420,14 +509,17 @@ async function summarizeWithGemini(
   env: Env,
   items: IngestedItem[],
   weather: WeatherSnapshot,
-  dateLabel: string
-) {
+  dateLabel: string,
+  previousOverview?: string,
+  previousFollowUps?: string[],
+  conflicts?: CalendarConflict[]
+): Promise<ReportOutput> {
   if (!env.GEMINI_API_KEY) {
     throw new Error("Missing GEMINI_API_KEY");
   }
 
   const model = env.GEMINI_MODEL ?? "gemini-3-flash-preview";
-  const prompt = buildGeminiPrompt(items, weather, dateLabel);
+  const prompt = buildGeminiPrompt(items, weather, dateLabel, previousOverview, previousFollowUps, conflicts);
 
   const response = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${env.GEMINI_API_KEY}`,
@@ -438,7 +530,7 @@ async function summarizeWithGemini(
         contents: [{ role: "user", parts: [{ text: prompt }] }],
         generationConfig: {
           responseMimeType: "application/json",
-          responseSchema: llmSummaryJsonSchema
+          responseSchema: reportOutputJsonSchema
         }
       })
     }
@@ -458,29 +550,10 @@ async function summarizeWithGemini(
   if (!text) throw new Error("Gemini response was empty");
 
   const parsed = JSON.parse(extractJsonObject(text));
-  return llmSummarySchema.parse(parsed);
+  return reportOutputSchema.parse(parsed);
 }
 
-async function renderHtmlToPdf(
-  env: Env,
-  args: {
-    dateLabel: string;
-    weather: WeatherSnapshot;
-    overview: string;
-    agendaEvents: CalendarEvent[];
-    todos: Array<{ task: string; done: boolean }>;
-    noteLines: string[];
-  }
-): Promise<Uint8Array> {
-  const html = renderHtml({
-    dateLabel: args.dateLabel,
-    weather: args.weather,
-    overview: args.overview,
-    agendaEvents: args.agendaEvents,
-    todos: args.todos,
-    noteLines: args.noteLines,
-  });
-
+async function htmlToPdf(env: Env, html: string): Promise<Uint8Array> {
   const browser = await puppeteer.launch(env.BROWSER);
   try {
     const page = await browser.newPage();
@@ -495,20 +568,95 @@ async function renderHtmlToPdf(
   }
 }
 
+async function renderHtmlToPdf(
+  env: Env,
+  args: {
+    dateLabel: string;
+    weather: WeatherSnapshot;
+    overview: string;
+    deltaSinceYesterday: string;
+    followUps: string[];
+    agendaEvents: CalendarEvent[];
+    todos: Array<{ task: string; done: boolean }>;
+    noteLines: string[];
+  }
+): Promise<Uint8Array> {
+  const html = renderHtml({
+    dateLabel: args.dateLabel,
+    weather: args.weather,
+    overview: args.overview,
+    deltaSinceYesterday: args.deltaSinceYesterday,
+    followUps: args.followUps,
+    agendaEvents: args.agendaEvents,
+    todos: args.todos,
+    noteLines: args.noteLines,
+  });
+
+  return htmlToPdf(env, html);
+}
+
 async function persistRun(
   env: Env,
   runAt: string,
   sourceCount: number,
   summaryJson: string,
   uploadStatus: string,
-  uploadMessage: string
-): Promise<void> {
+  uploadMessage: string,
+  remarkableDocId?: string
+): Promise<string> {
+  const id = crypto.randomUUID();
   await env.DB.prepare(
-    `INSERT INTO report_runs (id, run_at, source_count, summary_json, upload_status, upload_message)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6)`
+    `INSERT INTO report_runs (id, run_at, source_count, summary_json, upload_status, upload_message, remarkable_doc_id)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`
   )
-    .bind(crypto.randomUUID(), runAt, sourceCount, summaryJson, uploadStatus, uploadMessage)
+    .bind(id, runAt, sourceCount, summaryJson, uploadStatus, uploadMessage, remarkableDocId ?? null)
     .run();
+  return id;
+}
+
+async function getPreviousOverview(env: Env): Promise<string | undefined> {
+  const row = await env.DB.prepare(
+    `SELECT summary_json FROM report_runs ORDER BY run_at DESC LIMIT 1`
+  ).first<{ summary_json: string }>();
+
+  if (!row?.summary_json) return undefined;
+  try {
+    const parsed = JSON.parse(row.summary_json) as { overview?: string };
+    return parsed.overview || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function getPreviousFollowUps(env: Env): Promise<string[] | undefined> {
+  const row = await env.DB.prepare(
+    `SELECT summary_json FROM report_runs ORDER BY run_at DESC LIMIT 1`
+  ).first<{ summary_json: string }>();
+
+  if (!row?.summary_json) return undefined;
+  try {
+    const parsed = JSON.parse(row.summary_json) as { followUps?: string[] };
+    return parsed.followUps?.length ? parsed.followUps : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function uploadWithRetry(
+  adapter: ReturnType<typeof makeRemarkableAdapter>,
+  args: { fileName: string; folder: string; bytes: Uint8Array },
+  maxAttempts = 3
+) {
+  let lastResult = { ok: false, message: "No attempt made" } as Awaited<ReturnType<typeof adapter.uploadPdf>>;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    lastResult = await adapter.uploadPdf(args);
+    if (lastResult.ok) return lastResult;
+    if (attempt < maxAttempts - 1) {
+      const delayMs = 1000 * 2 ** attempt; // 1s, 2s, 4s
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+  return lastResult;
 }
 
 async function archivePreviousBrief(
@@ -551,7 +699,7 @@ async function archivePreviousBrief(
   }
 
   const bytes = new Uint8Array(await previousObj.arrayBuffer());
-  const upload = await adapter.uploadPdf({
+  const upload = await uploadWithRetry(adapter, {
     fileName: previousFileName,
     folder: HISTORY_BRIEFS_FOLDER,
     bytes
@@ -597,47 +745,85 @@ async function runDailyReport(env: Env, opts?: { force?: boolean; lookbackHours?
 
   const [{ items, cursor }, weather] = await Promise.all([getItemsSinceLastRun(env, cursorOverride), fetchWeather()]);
   const filteredItems = filterItemsForBrief(items);
-  const llmSummary = await summarizeWithGemini(env, filteredItems, weather, dateLabel);
+
+  // Fetch yesterday's overview for delta comparison
+  const previousOverview = await getPreviousOverview(env);
+  const previousFollowUps = await getPreviousFollowUps(env);
+
   const agendaEvents = buildCalendarAgenda(filteredItems, now);
+  const conflicts = detectCalendarConflicts(agendaEvents);
   const todos = buildGoogleTaskTodos(filteredItems);
   const noteLines = buildNoteLines(filteredItems);
 
-  const pdfBytes = await renderHtmlToPdf(env, {
-    dateLabel,
-    weather,
-    overview: llmSummary.overview,
-    agendaEvents,
-    todos,
-    noteLines,
-  });
+  const llmSummary = await summarizeWithGemini(env, filteredItems, weather, dateLabel, previousOverview, previousFollowUps, conflicts);
+
+  const referenceItems = buildReferenceItems(items);
+  const refFileName = fileName.replace(".pdf", "-ref.pdf");
+
+  const [pdfBytes, refPdfBytes] = await Promise.all([
+    renderHtmlToPdf(env, {
+      dateLabel,
+      weather,
+      overview: llmSummary.overview,
+      deltaSinceYesterday: llmSummary.deltaSinceYesterday,
+      followUps: llmSummary.followUps,
+      agendaEvents,
+      todos,
+      noteLines,
+    }),
+    referenceItems.length > 0
+      ? htmlToPdf(env, renderReferenceHtml({ dateLabel, items: referenceItems }))
+      : Promise.resolve(null),
+  ]);
 
   const reportKey = `reports/${fileName}`;
   await env.REPORT_BUCKET.put(reportKey, pdfBytes, {
     httpMetadata: { contentType: "application/pdf" }
   });
+  if (refPdfBytes) {
+    await env.REPORT_BUCKET.put(`reports/${refFileName}`, refPdfBytes, {
+      httpMetadata: { contentType: "application/pdf" }
+    });
+  }
 
   const remarkable = makeRemarkableAdapter(env);
-  const uploadResult = await remarkable.uploadPdf({
-    fileName,
-    folder: CURRENT_BRIEFS_FOLDER,
-    bytes: pdfBytes
-  });
+
+  // Upload main brief + optional reference doc together
+  const uploadItems = [
+    { fileName, folder: CURRENT_BRIEFS_FOLDER, bytes: pdfBytes },
+    ...(refPdfBytes ? [{ fileName: refFileName, folder: CURRENT_BRIEFS_FOLDER, bytes: refPdfBytes }] : []),
+  ];
+  const multiResult = await remarkable.uploadMultiplePdfs(uploadItems);
+  const uploadResult = multiResult.results[0];
 
   const archiveResult = await archivePreviousBrief(env, remarkable, now, fileName);
 
-  await persistRun(
+  const runId = await persistRun(
     env,
     now.toISOString(),
     filteredItems.length,
     JSON.stringify({
       overview: llmSummary.overview,
+      deltaSinceYesterday: llmSummary.deltaSinceYesterday,
+      followUps: llmSummary.followUps,
       agendaEvents,
       todos,
       noteLines
     }),
     uploadResult.ok ? "uploaded" : "failed",
-    uploadResult.message
+    uploadResult.message,
+    uploadResult.docId
   );
+
+  // Record engagement tracking entry for uploaded briefs
+  if (uploadResult.ok && uploadResult.docId) {
+    await env.DB.prepare(
+      `INSERT INTO brief_engagement (id, report_run_id, remarkable_doc_id, remarkable_doc_name, uploaded_at)
+       VALUES (?1, ?2, ?3, ?4, ?5)`
+    )
+      .bind(crypto.randomUUID(), runId, uploadResult.docId, fileName, now.toISOString())
+      .run();
+  }
 
   await env.STATE_KV.put("last_report_at", now.toISOString());
 
@@ -648,7 +834,51 @@ async function runDailyReport(env: Env, opts?: { force?: boolean; lookbackHours?
     sourceCount: filteredItems.length,
     reportKey,
     remarkable: uploadResult,
+    referenceDoc: multiResult.results[1] ?? null,
     archive: archiveResult
+  };
+}
+
+async function checkBriefEngagement(env: Env) {
+  const remarkable = makeRemarkableAdapter(env);
+  const listResult = await remarkable.listDocuments();
+
+  if (!listResult.ok) {
+    return { ok: false, message: listResult.message, checked: 0, updated: 0 };
+  }
+
+  const remoteDocIds = new Set(listResult.documents.map((d) => d.id));
+
+  // Get all tracked briefs that haven't been marked deleted
+  const { results: tracked } = await env.DB.prepare(
+    `SELECT id, remarkable_doc_id FROM brief_engagement WHERE deleted_at IS NULL AND remarkable_doc_id IS NOT NULL`
+  ).all<{ id: string; remarkable_doc_id: string }>();
+
+  let updated = 0;
+  const now = new Date().toISOString();
+
+  for (const entry of tracked ?? []) {
+    if (remoteDocIds.has(entry.remarkable_doc_id)) {
+      // Still on device — update last_seen_at
+      await env.DB.prepare(
+        `UPDATE brief_engagement SET last_seen_at = ?1 WHERE id = ?2`
+      ).bind(now, entry.id).run();
+      updated++;
+    } else {
+      // No longer on device — mark as deleted (user removed or archived)
+      await env.DB.prepare(
+        `UPDATE brief_engagement SET deleted_at = ?1 WHERE id = ?2`
+      ).bind(now, entry.id).run();
+      updated++;
+    }
+  }
+
+  return {
+    ok: true,
+    message: `Checked ${tracked?.length ?? 0} briefs against ${listResult.documents.length} remote documents`,
+    checked: tracked?.length ?? 0,
+    updated,
+    remoteDocCount: listResult.documents.length,
   };
 }
 
@@ -657,7 +887,28 @@ export default {
     const url = new URL(request.url);
     const { pathname } = url;
     if (request.method === "GET" && pathname === "/health") {
-      return json({ ok: true, service: "report-worker" });
+      const lastRun = await env.DB.prepare(
+        `SELECT run_at, source_count, upload_status, upload_message FROM report_runs ORDER BY run_at DESC LIMIT 1`
+      ).first<{ run_at: string; source_count: number; upload_status: string; upload_message: string }>();
+
+      const lastReportAt = await env.STATE_KV.get("last_report_at");
+      const hoursAgo = lastReportAt
+        ? ((Date.now() - new Date(lastReportAt).getTime()) / 3_600_000).toFixed(1)
+        : null;
+
+      return json({
+        ok: true,
+        service: "report-worker",
+        lastRun: lastRun
+          ? {
+              runAt: lastRun.run_at,
+              sourceCount: lastRun.source_count,
+              uploadStatus: lastRun.upload_status,
+              uploadMessage: lastRun.upload_message,
+              hoursAgo,
+            }
+          : null,
+      });
     }
     if (request.method === "POST" && pathname === "/run") {
       try {
@@ -675,6 +926,13 @@ export default {
         }
 
         return json(await runDailyReport(env, { force, lookbackHours, since }));
+      } catch (error) {
+        return json({ error: error instanceof Error ? error.message : "Unexpected error" }, 500);
+      }
+    }
+    if (request.method === "POST" && pathname === "/check-briefs") {
+      try {
+        return json(await checkBriefEngagement(env));
       } catch (error) {
         return json({ error: error instanceof Error ? error.message : "Unexpected error" }, 500);
       }

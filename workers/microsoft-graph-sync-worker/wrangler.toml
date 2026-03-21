@@ -1,0 +1,10 @@
+name = "reorgable-ms-sync"
+main = "src/index.ts"
+compatibility_date = "2026-03-19"
+
+[triggers]
+crons = ["0 11 * * *"]
+
+[[services]]
+binding = "INGEST_SERVICE"
+service = "reorgable-ingest"

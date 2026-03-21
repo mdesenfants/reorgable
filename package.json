@@ -6,7 +6,8 @@
     "packages/shared",
     "workers/ingest-worker",
     "workers/report-worker",
-    "workers/email-worker"
+    "workers/email-worker",
+    "workers/microsoft-graph-sync-worker"
   ],
   "scripts": {
     "typecheck": "npm run --workspaces typecheck",

@@ -12,6 +12,7 @@ type Env = {
   DB: D1Database;
   RAW_BUCKET: R2Bucket;
   INGEST_API_TOKEN: string;
+  INGEST_API_TOKEN_ALT?: string;
 };
 
 type IngestResult = {
@@ -206,7 +207,10 @@ export default {
   async fetch(request, env): Promise<Response> {
     try {
       const token = parseAuth(request);
-      if (!token || token !== env.INGEST_API_TOKEN) return unauthorized();
+      const validTokens = [env.INGEST_API_TOKEN, env.INGEST_API_TOKEN_ALT].filter(
+        (value): value is string => !!value
+      );
+      if (!token || !validTokens.includes(token)) return unauthorized();
 
       const { pathname } = new URL(request.url);
       if (request.method === "GET" && pathname === "/health") {
