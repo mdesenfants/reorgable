@@ -452,8 +452,8 @@ export default {
           headers: { "Content-Type": "application/json" },
         });
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        return new Response(JSON.stringify({ error: message }), {
+        console.error("Error creating Microsoft To Do task", err);
+        return new Response(JSON.stringify({ error: "Failed to create task" }), {
           status: 500,
           headers: { "Content-Type": "application/json" },
         });
@@ -477,8 +477,8 @@ export default {
           headers: { "Content-Type": "application/json" },
         });
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        return new Response(JSON.stringify({ error: message }), {
+        console.error("Error completing Microsoft To Do task", err);
+        return new Response(JSON.stringify({ error: "Failed to complete task" }), {
           status: 500,
           headers: { "Content-Type": "application/json" },
         });
