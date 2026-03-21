@@ -2,6 +2,7 @@ import puppeteer, { type BrowserWorker } from "@cloudflare/puppeteer";
 import { reportOutputSchema, reportOutputJsonSchema, type ReportOutput } from "@reorgable/shared";
 import { makeRemarkableAdapter } from "./remarkable/adapter-factory";
 import { renderHtml, renderReferenceHtml, type ReferenceItem } from "./template";
+import { fetchDailyOffice, type DailyOfficeData } from "./daily-office";
 
 type Env = {
   DB: D1Database;
@@ -15,6 +16,7 @@ type Env = {
   REMARKABLE_SESSION_TOKEN?: string;
   REMARKABLE_WEBAPP_HOST?: string;
   REMARKABLE_INTERNAL_HOST?: string;
+  MS_GRAPH_WORKER_URL?: string;
 };
 
 type IngestedItem = {
@@ -43,6 +45,7 @@ type ItemMetadata = {
   relatedEmailMessageId?: string;
   externalId?: string;
   parentTaskId?: string;
+  dueAt?: string;
 };
 
 type CalendarEvent = {
@@ -383,7 +386,7 @@ function detectCalendarConflicts(events: CalendarEvent[]): CalendarConflict[] {
 
 const TASK_SOURCE_TAGS = ["google-tasks", "microsoft-todo", "microsoft-flagged-email"];
 
-function buildGoogleTaskTodos(items: IngestedItem[]): Array<{ task: string; done: boolean; isSubtask: boolean }> {
+function buildGoogleTaskTodos(items: IngestedItem[]): Array<{ task: string; done: boolean; isSubtask: boolean; dueAt?: string }> {
   const taskItems = items
     .filter((item) => item.source_type === "task")
     .map((item) => {
@@ -394,22 +397,23 @@ function buildGoogleTaskTodos(items: IngestedItem[]): Array<{ task: string; done
         done: m.isDone === true,
         isKnownTask: tags.some((t) => TASK_SOURCE_TAGS.includes(t)),
         externalId: m.externalId ?? null,
-        parentTaskId: m.parentTaskId ?? null
+        parentTaskId: m.parentTaskId ?? null,
+        dueAt: m.dueAt ?? undefined
       };
     })
     .filter((todo) => todo.isKnownTask);
 
   // Group subtasks under their parents
   const parentIds = new Set(taskItems.map((t) => t.externalId).filter(Boolean));
-  const result: Array<{ task: string; done: boolean; isSubtask: boolean }> = [];
+  const result: Array<{ task: string; done: boolean; isSubtask: boolean; dueAt?: string }> = [];
 
   for (const todo of taskItems) {
     if (todo.parentTaskId) continue; // skip subtasks in first pass
-    result.push({ task: todo.task, done: todo.done, isSubtask: false });
+    result.push({ task: todo.task, done: todo.done, isSubtask: false, dueAt: todo.dueAt });
     // append subtasks immediately after their parent
     for (const sub of taskItems) {
       if (sub.parentTaskId === todo.externalId) {
-        result.push({ task: sub.task, done: sub.done, isSubtask: true });
+        result.push({ task: sub.task, done: sub.done, isSubtask: true, dueAt: sub.dueAt });
       }
     }
   }
@@ -417,7 +421,7 @@ function buildGoogleTaskTodos(items: IngestedItem[]): Array<{ task: string; done
   // Orphan subtasks (parent not in current batch) go at the end
   for (const todo of taskItems) {
     if (todo.parentTaskId && !parentIds.has(todo.parentTaskId)) {
-      result.push({ task: todo.task, done: todo.done, isSubtask: true });
+      result.push({ task: todo.task, done: todo.done, isSubtask: true, dueAt: todo.dueAt });
     }
   }
 
@@ -432,7 +436,7 @@ function buildNoteLines(items: IngestedItem[]): string[] {
     .slice(0, 18);
 }
 
-function buildGeminiPrompt(items: IngestedItem[], weather: WeatherSnapshot, dateLabel: string, previousOverview?: string, previousFollowUps?: string[], conflicts?: CalendarConflict[]): string {
+function buildGeminiPrompt(items: IngestedItem[], weather: WeatherSnapshot, dateLabel: string, previousOverview?: string, previousFollowUps?: string[], conflicts?: CalendarConflict[], engagement?: EngagementSummary, operatorContext?: string): string {
   const compact = items.map((item) => {
     const meta = safeParseMetadata(item);
     // Convert calendar timestamps to Pacific for the LLM
@@ -473,6 +477,10 @@ function buildGeminiPrompt(items: IngestedItem[], weather: WeatherSnapshot, date
     "- all times shown are already in Pacific Time",
   ];
 
+  if (operatorContext) {
+    lines.push("", "Operator guidance (follow these instructions from the user):", operatorContext);
+  }
+
   if (previousOverview) {
     lines.push("", "Yesterday's brief overview (for delta comparison):", previousOverview);
   }
@@ -488,6 +496,16 @@ function buildGeminiPrompt(items: IngestedItem[], weather: WeatherSnapshot, date
     lines.push("", "⚠ Calendar conflicts detected (warn the user about these overlapping meetings):");
     for (const c of conflicts) {
       lines.push(`- "${c.eventA}" and "${c.eventB}" overlap by ${c.overlapMinutes} minutes`);
+    }
+  }
+
+  if (engagement) {
+    const status = engagement.stillOnDevice
+      ? `still on device (last seen ${engagement.retentionHours ?? "?"}h after upload)`
+      : `removed from device after ${engagement.retentionHours ?? "?"}h`;
+    lines.push("", `📊 Previous brief engagement: "${engagement.briefName}" was ${status}.`);
+    if (!engagement.stillOnDevice && engagement.retentionHours !== undefined && engagement.retentionHours < 1) {
+      lines.push("  The user deleted the brief quickly — consider being more concise today.");
     }
   }
 
@@ -512,14 +530,16 @@ async function summarizeWithGemini(
   dateLabel: string,
   previousOverview?: string,
   previousFollowUps?: string[],
-  conflicts?: CalendarConflict[]
+  conflicts?: CalendarConflict[],
+  engagement?: EngagementSummary,
+  operatorContext?: string
 ): Promise<ReportOutput> {
   if (!env.GEMINI_API_KEY) {
     throw new Error("Missing GEMINI_API_KEY");
   }
 
   const model = env.GEMINI_MODEL ?? "gemini-3-flash-preview";
-  const prompt = buildGeminiPrompt(items, weather, dateLabel, previousOverview, previousFollowUps, conflicts);
+  const prompt = buildGeminiPrompt(items, weather, dateLabel, previousOverview, previousFollowUps, conflicts, engagement, operatorContext);
 
   const response = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${env.GEMINI_API_KEY}`,
@@ -577,8 +597,9 @@ async function renderHtmlToPdf(
     deltaSinceYesterday: string;
     followUps: string[];
     agendaEvents: CalendarEvent[];
-    todos: Array<{ task: string; done: boolean }>;
+    todos: Array<{ task: string; done: boolean; dueAt?: string }>;
     noteLines: string[];
+    dailyOffice?: DailyOfficeData;
   }
 ): Promise<Uint8Array> {
   const html = renderHtml({
@@ -590,6 +611,7 @@ async function renderHtmlToPdf(
     agendaEvents: args.agendaEvents,
     todos: args.todos,
     noteLines: args.noteLines,
+    dailyOffice: args.dailyOffice,
   });
 
   return htmlToPdf(env, html);
@@ -640,6 +662,38 @@ async function getPreviousFollowUps(env: Env): Promise<string[] | undefined> {
   } catch {
     return undefined;
   }
+}
+
+type EngagementSummary = {
+  briefName: string;
+  uploadedAt: string;
+  stillOnDevice: boolean;
+  deletedAt?: string;
+  lastSeenAt?: string;
+  retentionHours?: number;
+};
+
+async function getPreviousEngagement(env: Env): Promise<EngagementSummary | undefined> {
+  const row = await env.DB.prepare(
+    `SELECT remarkable_doc_name, uploaded_at, last_seen_at, deleted_at
+     FROM brief_engagement
+     ORDER BY uploaded_at DESC LIMIT 1`
+  ).first<{ remarkable_doc_name: string; uploaded_at: string; last_seen_at: string | null; deleted_at: string | null }>();
+
+  if (!row) return undefined;
+
+  const stillOnDevice = !row.deleted_at;
+  const endTime = row.deleted_at ?? row.last_seen_at ?? row.uploaded_at;
+  const retentionMs = new Date(endTime).getTime() - new Date(row.uploaded_at).getTime();
+
+  return {
+    briefName: row.remarkable_doc_name,
+    uploadedAt: row.uploaded_at,
+    stillOnDevice,
+    deletedAt: row.deleted_at ?? undefined,
+    lastSeenAt: row.last_seen_at ?? undefined,
+    retentionHours: retentionMs > 0 ? Math.round(retentionMs / 3_600_000 * 10) / 10 : undefined,
+  };
 }
 
 async function uploadWithRetry(
@@ -723,6 +777,35 @@ async function archivePreviousBrief(
   };
 }
 
+async function dispatchFollowUpsToGraph(
+  env: Env,
+  followUps: string[]
+): Promise<{ dispatched: number; failed: number }> {
+  if (!env.MS_GRAPH_WORKER_URL || followUps.length === 0) {
+    return { dispatched: 0, failed: 0 };
+  }
+
+  const url = env.MS_GRAPH_WORKER_URL.replace(/\/$/, "") + "/tasks/create";
+  let dispatched = 0;
+  let failed = 0;
+
+  for (const followUp of followUps) {
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: followUp }),
+      });
+      if (res.ok) dispatched++;
+      else failed++;
+    } catch {
+      failed++;
+    }
+  }
+
+  return { dispatched, failed };
+}
+
 async function runDailyReport(env: Env, opts?: { force?: boolean; lookbackHours?: number; since?: string }) {
   const now = new Date();
   if (!opts?.force && !shouldRunNow(now)) {
@@ -746,16 +829,29 @@ async function runDailyReport(env: Env, opts?: { force?: boolean; lookbackHours?
   const [{ items, cursor }, weather] = await Promise.all([getItemsSinceLastRun(env, cursorOverride), fetchWeather()]);
   const filteredItems = filterItemsForBrief(items);
 
+  // Skip report if there's nothing meaningful to include
+  if (filteredItems.length === 0) {
+    await env.STATE_KV.put("last_report_cursor", cursor);
+    return { ok: true, skipped: true, reason: "No items to include in brief", cursorUsed: cursor };
+  }
+
   // Fetch yesterday's overview for delta comparison
-  const previousOverview = await getPreviousOverview(env);
-  const previousFollowUps = await getPreviousFollowUps(env);
+  const pacificParts = getPacificParts(now);
+  const pacificDate = new Date(pacificParts.year, pacificParts.month - 1, pacificParts.day);
+  const [previousOverview, previousFollowUps, previousEngagement, operatorContext, dailyOffice] = await Promise.all([
+    getPreviousOverview(env),
+    getPreviousFollowUps(env),
+    getPreviousEngagement(env),
+    env.STATE_KV.get("operator_context"),
+    fetchDailyOffice(env.STATE_KV, pacificDate).catch(() => undefined),
+  ]);
 
   const agendaEvents = buildCalendarAgenda(filteredItems, now);
   const conflicts = detectCalendarConflicts(agendaEvents);
   const todos = buildGoogleTaskTodos(filteredItems);
   const noteLines = buildNoteLines(filteredItems);
 
-  const llmSummary = await summarizeWithGemini(env, filteredItems, weather, dateLabel, previousOverview, previousFollowUps, conflicts);
+  const llmSummary = await summarizeWithGemini(env, filteredItems, weather, dateLabel, previousOverview, previousFollowUps, conflicts, previousEngagement, operatorContext ?? undefined);
 
   const referenceItems = buildReferenceItems(items);
   const refFileName = fileName.replace(".pdf", "-ref.pdf");
@@ -770,6 +866,7 @@ async function runDailyReport(env: Env, opts?: { force?: boolean; lookbackHours?
       agendaEvents,
       todos,
       noteLines,
+      dailyOffice: dailyOffice ?? undefined,
     }),
     referenceItems.length > 0
       ? htmlToPdf(env, renderReferenceHtml({ dateLabel, items: referenceItems }))
@@ -788,13 +885,33 @@ async function runDailyReport(env: Env, opts?: { force?: boolean; lookbackHours?
 
   const remarkable = makeRemarkableAdapter(env);
 
-  // Upload main brief + optional reference doc together
+  // Upload main brief + optional reference doc with retry
   const uploadItems = [
     { fileName, folder: CURRENT_BRIEFS_FOLDER, bytes: pdfBytes },
     ...(refPdfBytes ? [{ fileName: refFileName, folder: CURRENT_BRIEFS_FOLDER, bytes: refPdfBytes }] : []),
   ];
-  const multiResult = await remarkable.uploadMultiplePdfs(uploadItems);
-  const uploadResult = multiResult.results[0];
+
+  let multiResult: Awaited<ReturnType<typeof remarkable.uploadMultiplePdfs>>;
+  let uploadResult: (typeof multiResult)["results"][0];
+  const maxMultiAttempts = 3;
+
+  for (let attempt = 0; attempt < maxMultiAttempts; attempt++) {
+    multiResult = await remarkable.uploadMultiplePdfs(uploadItems);
+    uploadResult = multiResult.results[0];
+    if (uploadResult.ok) break;
+    if (attempt < maxMultiAttempts - 1) {
+      await new Promise((resolve) => setTimeout(resolve, 1000 * 2 ** attempt));
+    }
+  }
+
+  // Dead-letter to KV if all retries failed — allows manual recovery
+  if (!uploadResult!.ok) {
+    const deadLetterKey = `dead-letter/report/${fileName}`;
+    await env.STATE_KV.put(deadLetterKey, pdfBytes, { expirationTtl: 7 * 24 * 60 * 60 });
+    if (refPdfBytes) {
+      await env.STATE_KV.put(`dead-letter/report/${refFileName}`, refPdfBytes, { expirationTtl: 7 * 24 * 60 * 60 });
+    }
+  }
 
   const archiveResult = await archivePreviousBrief(env, remarkable, now, fileName);
 
@@ -810,22 +927,28 @@ async function runDailyReport(env: Env, opts?: { force?: boolean; lookbackHours?
       todos,
       noteLines
     }),
-    uploadResult.ok ? "uploaded" : "failed",
-    uploadResult.message,
-    uploadResult.docId
+    uploadResult!.ok ? "uploaded" : "failed",
+    uploadResult!.message,
+    uploadResult!.docId
   );
 
   // Record engagement tracking entry for uploaded briefs
-  if (uploadResult.ok && uploadResult.docId) {
+  if (uploadResult!.ok && uploadResult!.docId) {
     await env.DB.prepare(
       `INSERT INTO brief_engagement (id, report_run_id, remarkable_doc_id, remarkable_doc_name, uploaded_at)
        VALUES (?1, ?2, ?3, ?4, ?5)`
     )
-      .bind(crypto.randomUUID(), runId, uploadResult.docId, fileName, now.toISOString())
+      .bind(crypto.randomUUID(), runId, uploadResult!.docId, fileName, now.toISOString())
       .run();
   }
 
-  await env.STATE_KV.put("last_report_at", now.toISOString());
+  // Only advance the cursor on scheduled runs — force runs shouldn't consume items
+  if (!opts?.force) {
+    await env.STATE_KV.put("last_report_at", now.toISOString());
+  }
+
+  // Dispatch follow-ups as tasks to Microsoft To Do (best-effort)
+  const followUpDispatch = await dispatchFollowUpsToGraph(env, llmSummary.followUps);
 
   return {
     ok: true,
@@ -833,9 +956,10 @@ async function runDailyReport(env: Env, opts?: { force?: boolean; lookbackHours?
     cursorUsed: cursor,
     sourceCount: filteredItems.length,
     reportKey,
-    remarkable: uploadResult,
-    referenceDoc: multiResult.results[1] ?? null,
-    archive: archiveResult
+    remarkable: uploadResult!,
+    referenceDoc: multiResult!.results[1] ?? null,
+    archive: archiveResult,
+    followUpDispatch,
   };
 }
 

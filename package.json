@@ -16,9 +16,11 @@
     "dev:email": "npm run -w @reorgable/email-worker dev",
     "remarkable:pair": "node ./scripts/remarkable-pair.mjs",
     "preview": "tsx scripts/preview-report.ts",
+    "preview:live": "tsx scripts/preview-live.ts",
     "test:deployed": "tsx scripts/test-deployed.ts",
     "test:ingest:note": "tsx scripts/test-ingest-note.ts",
     "note": "bash ./scripts/quick-note.sh",
+    "context": "tsx scripts/adjust-context.ts",
     "report:health": "bash ./scripts/report-health.sh",
     "report:force": "bash ./scripts/report-force.sh",
     "deploy:report": "npm run -w @reorgable/report-worker deploy && npm run test:deployed"
