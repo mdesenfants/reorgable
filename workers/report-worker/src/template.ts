@@ -2,10 +2,14 @@
 // Used by scripts/preview-report.ts (local Puppeteer) and, in Phase 2,
 // by the Cloudflare Worker via @cloudflare/puppeteer (Browser Rendering).
 
+import type { DailyOfficeData, DailyOfficeSection, DailyOfficeLesson } from "./daily-office";
+
 export interface TemplateData {
   dateLabel: string;
   weather: { tempF: number; weatherCode: number; hourly: Array<{ hour: number; tempF: number; weatherCode: number }> };
   overview: string;
+  deltaSinceYesterday: string;
+  followUps: string[];
   agendaEvents: Array<{
     title: string;
     startAt: string;
@@ -14,8 +18,9 @@ export interface TemplateData {
     endLabel: string;
     calendarName: string;
   }>;
-  todos: Array<{ task: string; done: boolean; isSubtask?: boolean }>;
+  todos: Array<{ task: string; done: boolean; isSubtask?: boolean; dueAt?: string }>;
   noteLines: string[];
+  dailyOffice?: DailyOfficeData;
 }
 
 /** Escape HTML special characters to prevent injection in rendered output. */
@@ -60,19 +65,21 @@ function weatherLabel(code: number, tempF: number): string {
   return `${tempF.toFixed(0)}°F · ${desc}`;
 }
 
-const WMO_EMOJI: Partial<Record<number, string>> = {
-  0: "☀️", 1: "🌤️", 2: "⛅", 3: "☁️",
-  45: "🌫️", 48: "🌫️",
-  51: "🌦️", 53: "🌦️", 55: "🌦️",
-  61: "🌧️", 63: "🌧️", 65: "🌧️",
-  71: "🌨️", 73: "🌨️", 75: "🌨️", 77: "🌨️",
-  80: "🌧️", 81: "🌧️", 82: "🌧️",
-  85: "🌨️", 86: "🌨️",
-  95: "⛈️", 96: "⛈️", 99: "⛈️",
+// WMO code → Weather Icons class (free vector icon font, crisp on e-ink).
+const WMO_ICON: Partial<Record<number, string>> = {
+  0: "wi-day-sunny", 1: "wi-day-sunny-overcast", 2: "wi-day-cloudy", 3: "wi-cloudy",
+  45: "wi-fog", 48: "wi-fog",
+  51: "wi-sprinkle", 53: "wi-sprinkle", 55: "wi-sprinkle",
+  61: "wi-rain-mix", 63: "wi-rain", 65: "wi-rain-wind",
+  71: "wi-snow", 73: "wi-snow", 75: "wi-snow", 77: "wi-snow",
+  80: "wi-showers", 81: "wi-showers", 82: "wi-showers",
+  85: "wi-rain-mix", 86: "wi-rain-mix",
+  95: "wi-thunderstorm", 96: "wi-thunderstorm", 99: "wi-thunderstorm",
 };
 
-function wmoEmoji(code: number): string {
-  return WMO_EMOJI[code] ?? "❓";
+function wmoIcon(code: number): string {
+  const cls = WMO_ICON[code] ?? "wi-na";
+  return `<i class="wi ${cls}"></i>`;
 }
 
 /**
@@ -91,6 +98,120 @@ function ruledLinesFill(count: number): string {
   return `<ruled-lines class="fill">${lines}</ruled-lines>`;
 }
 
+// ── Reference appendix types & renderer ──────────────────────────────
+
+export interface ReferenceItem {
+  source: string;
+  title: string;
+  body: string;
+  meta?: string;
+}
+
+export interface ReferenceTemplateData {
+  dateLabel: string;
+  items: ReferenceItem[];
+}
+
+export function renderReferenceHtml(data: ReferenceTemplateData): string {
+  const itemsHtml = data.items
+    .map(
+      (item) =>
+        `<div class="ref-item">
+          <div class="ref-source">${esc(item.source)}</div>
+          <div class="ref-title">${esc(item.title)}</div>
+          ${item.meta ? `<div class="ref-meta">${esc(item.meta)}</div>` : ""}
+          <div class="ref-body">${esc(item.body)}</div>
+        </div>`
+    )
+    .join("\n    ");
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Reference \u2013 ${esc(data.dateLabel)}</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400..900;1,400..900&display=swap');
+    @import url('https://cdnjs.cloudflare.com/ajax/libs/weather-icons/2.0.12/css/weather-icons.min.css');
+    @page { size: Letter; margin: 0.55in 0.65in 0.5in; }
+    html, body { margin: 0; padding: 0; }
+    body {
+      font-family: 'Playfair Display', serif;
+      font-optical-sizing: auto;
+      font-size: 12pt;
+      line-height: 1.5;
+      color: #111;
+    }
+    h1 { font-size: 24pt; font-weight: 700; margin: 0 0 0.1em; }
+    .date-sub { font-size: 12pt; color: #333; margin: 0 0 0.5em; }
+    .divider { border: none; border-top: 1.5px solid #555; margin: 0.3em 0 0.6em; }
+    .ref-item {
+      break-inside: avoid;
+      border: 1.5px solid #666;
+      border-radius: 3px;
+      padding: 0.5em 0.7em;
+      margin-bottom: 0.5em;
+    }
+    .ref-source {
+      font-size: 9pt;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: #444;
+      margin-bottom: 0.15em;
+    }
+    .ref-title { font-size: 13pt; font-weight: 700; margin-bottom: 0.15em; }
+    .ref-meta { font-size: 10pt; color: #333; font-style: italic; margin-bottom: 0.25em; }
+    .ref-body { font-size: 11pt; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <h1>Reference</h1>
+  <div class="date-sub">${esc(data.dateLabel)}</div>
+  <hr class="divider">
+  ${itemsHtml}
+</body>
+</html>`;
+}
+
+function renderOfficeLesson(name: string, lesson?: DailyOfficeLesson): string {
+  if (!lesson) return "";
+  const textBlock = lesson.text
+    ? `<div class="office-text">${esc(lesson.text)}</div>`
+    : `<div class="office-ref-only">(text unavailable)</div>`;
+  return `<div class="office-lesson">
+        <div class="office-lesson-label">${esc(name)}: ${esc(lesson.reference)}</div>
+        ${textBlock}
+      </div>`;
+}
+
+function renderOfficeSection(label: string, section: DailyOfficeSection): string {
+  const psalmText = section.psalms.length > 0 ? section.psalms.join(", ") : "None";
+  return `<div class="office-section">
+      <div class="office-section-title">${esc(label)}</div>
+      <div class="office-psalms">Psalms: ${esc(psalmText)}</div>
+      ${renderOfficeLesson("First Lesson", section.first)}
+      ${renderOfficeLesson("Second Lesson", section.second)}
+      ${renderOfficeLesson("Gospel", section.gospel)}
+    </div>`;
+}
+
+function renderOfficePage(office: DailyOfficeData): string {
+  const subtitle = office.title
+    ? `${office.title} \u00b7 ${office.day}`
+    : `${office.week} \u00b7 ${office.day}`;
+  return `
+  <div class="office-page">
+    <div class="office-title">Daily Office</div>
+    <div class="office-subtitle">${esc(subtitle)}</div>
+    <div class="office-season">${esc(office.season)}</div>
+    <hr class="divider">
+    <div class="office-columns">
+      ${renderOfficeSection("Morning Prayer", office.morning)}
+      ${renderOfficeSection("Evening Prayer", office.evening)}
+    </div>
+  </div>`;
+}
+
 export function renderHtml(data: TemplateData): string {
   // Keep only active tasks for the check-list panel.
   const activeTodos = data.todos.filter((t) => !t.done);
@@ -101,6 +222,33 @@ export function renderHtml(data: TemplateData): string {
         `<li><span class="item-num">${i + 1}.</span><span><strong>${esc(item.startLabel)}-${esc(item.endLabel)}</strong> ${esc(item.title)} <em>(${esc(item.calendarName)})</em></span></li>`
     )
     .join("\n          ");
+
+  // Build due-date badge for a todo
+  const now = new Date();
+  const todayMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  function dueBadge(dueAt?: string): string {
+    if (!dueAt) return "";
+    const due = new Date(dueAt);
+    if (Number.isNaN(due.getTime())) return "";
+    const dueMidnight = new Date(due.getFullYear(), due.getMonth(), due.getDate());
+    const diffDays = Math.round((dueMidnight.getTime() - todayMidnight.getTime()) / 86_400_000);
+    let label: string;
+    let cls: string;
+    if (diffDays < 0) {
+      label = `${Math.abs(diffDays)}d overdue`;
+      cls = "due-badge overdue";
+    } else if (diffDays === 0) {
+      label = "due today";
+      cls = "due-badge today";
+    } else if (diffDays === 1) {
+      label = "due tomorrow";
+      cls = "due-badge soon";
+    } else {
+      label = `${diffDays}d left`;
+      cls = "due-badge";
+    }
+    return `<span class="${cls}">${esc(label)}</span>`;
+  }
 
   // Build grouped todo HTML — parents and their subtasks stay together
   const todoGroups: string[] = [];
@@ -113,7 +261,7 @@ export function renderHtml(data: TemplateData): string {
     currentGroup.push(
       `<div class="todo-item${todo.isSubtask ? " subtask" : ""}">` +
       `<span class="checkbox"></span>` +
-      `<span>${esc(todo.task)}</span>` +
+      `<span>${esc(todo.task)}${dueBadge(todo.dueAt)}</span>` +
       `</div>`
     );
   }
@@ -124,6 +272,10 @@ export function renderHtml(data: TemplateData): string {
 
   const notesCaptureHtml = data.noteLines
     .map((line) => `<li>${esc(line)}</li>`)
+    .join("\n          ");
+
+  const followUpsHtml = data.followUps
+    .map((line) => `<li><span>${esc(line)}</span></li>`)
     .join("\n          ");
 
   const dayStartMinutes = 6 * 60;
@@ -161,7 +313,7 @@ export function renderHtml(data: TemplateData): string {
     const topPct = (i / 15) * 100;
     const hw = data.weather.hourly.find((w) => w.hour === hour24);
     const weatherBit = hw
-      ? `<br><span class="hour-weather">${wmoEmoji(hw.weatherCode)} ${hw.tempF.toFixed(0)}°</span>`
+      ? `<br><span class="hour-weather">${wmoIcon(hw.weatherCode)} ${hw.tempF.toFixed(0)}°</span>`
       : "";
     return `<div class="calendar-row" style="top:${topPct.toFixed(2)}%"><span class="calendar-row-label">${esc(label)}${weatherBit}</span><span class="calendar-row-line"></span></div>`;
   }).join("\n          ");
@@ -173,11 +325,18 @@ export function renderHtml(data: TemplateData): string {
   <title>Daily Brief \u2013 ${esc(data.dateLabel)}</title>
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400..900;1,400..900&display=swap');
+    @import url('https://cdnjs.cloudflare.com/ajax/libs/weather-icons/2.0.12/css/weather-icons.min.css');
 
     /* ── Design System ─────────────────────────────────────────────── */
     @page {
       size: Letter;
       margin: 0.55in 0.65in 0.5in;
+    }
+
+    :root {
+      --box-border-width: 1.5px;
+      --box-border-color: #666;
+      --box-border-radius: 3px;
     }
 
     html, body { margin: 0; padding: 0; }
@@ -195,7 +354,7 @@ export function renderHtml(data: TemplateData): string {
     /* ── Typography ────────────────────────────────────────────────── */
     h1.brief-title { font-size: 30pt; font-weight: 700; line-height: 1; margin: 0; }
     .section-title { font-size: 16pt; font-weight: 700; margin: 0 0 0.35em; color: #000; }
-    .date-sub     { font-size: 14pt; color: #666; margin: 0.15em 0 0; }
+    .date-sub     { font-size: 14pt; color: #333; margin: 0.15em 0 0; }
 
     /* ── Utility (replaces Bootstrap) ──────────────────────────────── */
     .header-row {
@@ -206,14 +365,17 @@ export function renderHtml(data: TemplateData): string {
     .section-gap { margin-bottom: 0.6em; }
     .divider {
       border: none;
-      border-top: 1px solid #999;
+      border-top: 1.5px solid #555;
       margin: 0.3em 0 0.6em;
     }
 
     /* ── Panels ────────────────────────────────────────────────────── */
     .panel {
-      border: 1px solid #bbb;
-      border-radius: 3px;
+      border-style: solid;
+      border-width: var(--box-border-width);
+      border-color: var(--box-border-color);
+      border-radius: var(--box-border-radius);
+      box-sizing: border-box;
       padding: 0.5em 0.7em;
       break-inside: avoid;
     }
@@ -229,7 +391,7 @@ export function renderHtml(data: TemplateData): string {
       margin-bottom: 0.15em;
       font-size: 14pt;
     }
-    .item-num { color: #888; min-width: 1.1em; flex-shrink: 0; }
+    .item-num { color: #444; min-width: 1.1em; flex-shrink: 0; }
 
     /* ── Todos ─────────────────────────────────────────────────────── */
     .todos-grid { display: grid; grid-template-columns: 1fr 1fr; column-gap: 1.2em; }
@@ -247,7 +409,7 @@ export function renderHtml(data: TemplateData): string {
       width: 18px;
       height: 18px;
       min-width: 18px;
-      border: 2px solid #444;
+      border: 2px solid #000;
       border-radius: 1px;
       margin-top: 0.15em;
       flex-shrink: 0;
@@ -255,7 +417,7 @@ export function renderHtml(data: TemplateData): string {
     .todo-item.subtask {
       padding-left: 1.4em;
       font-size: 12pt;
-      color: #444;
+      color: #222;
     }
     .todo-item.subtask .checkbox {
       width: 14px;
@@ -263,22 +425,47 @@ export function renderHtml(data: TemplateData): string {
       min-width: 14px;
       border-radius: 50%;
     }
+    .due-badge {
+      display: inline-block;
+      font-size: 9pt;
+      color: #333;
+      border: 1px solid #888;
+      border-radius: 2px;
+      padding: 0 0.3em;
+      margin-left: 0.4em;
+      vertical-align: middle;
+      line-height: 1.4;
+    }
+    .due-badge.overdue { font-weight: 700; border-color: #000; color: #000; }
+    .due-badge.today { font-weight: 600; border-style: dashed; }
+    .due-badge.soon { font-style: italic; }
     /* ── Weather ───────────────────────────────────────────────────── */
     
     .weather-badge {
       font-size: 13pt;
-      color: #555;
-      background: #f2f2f2;
-      border: 1px solid #ddd;
+      color: #111;
+      border: 1.5px solid #666;
       border-radius: 3px;
       padding: 0.1em 0.5em;
     }
+    .weather-badge .wi { margin-right: 0.2em; }
+    .delta-text { font-size: 12pt; color: #333; margin: 0 0 0.1em; font-style: italic; }
+    .follow-ups { list-style: none; padding: 0; margin: 0; }
+    .follow-ups li {
+      display: flex;
+      gap: 0.35em;
+      line-height: 1.45;
+      margin-bottom: 0.15em;
+      font-size: 13pt;
+    }
+    .follow-ups li::before { content: "→"; color: #444; flex-shrink: 0; }
     .hour-weather {
       display: block;
       font-size: 8pt;
-      color: #777;
+      color: #333;
       line-height: 1.2;
     }
+    .hour-weather .wi { font-size: 9pt; }
 
     /* ── Ruled lines ───────────────────────────────────────────────── */
     ruled-lines {
@@ -287,7 +474,7 @@ export function renderHtml(data: TemplateData): string {
     }
     ruled-lines hr {
       border: none;
-      border-top: 1px solid #ccc;
+      border-top: 1px solid #999;
       margin: 0 0 30px;  /* ~8mm line spacing */
     }
     /* Flex-fill variant for the dedicated notes page */
@@ -322,6 +509,68 @@ export function renderHtml(data: TemplateData): string {
     .captured-notes { list-style: disc; margin: 0 0 0.5em 1.1em; padding: 0; }
     .captured-notes li { margin-bottom: 0.15em; font-size: 12.5pt; }
 
+    /* ── Daily Office page ─────────────────────────────────────────── */
+    .office-page { break-before: page; }
+    .office-title { font-size: 20pt; font-weight: 700; margin: 0 0 0.15em; }
+    .office-subtitle { font-size: 14pt; color: #222; margin: 0 0 0.1em; }
+    .office-season { font-size: 12pt; color: #333; font-style: italic; margin: 0 0 0.15em; }
+    .office-columns {
+      display: block;
+    }
+    .office-section { margin-bottom: 0.4em; break-inside: auto; }
+    .office-section-title {
+      font-size: 14pt; font-weight: 700; margin: 0 0 0.1em;
+      border-bottom: 1.5px solid #555; padding-bottom: 0.05em;
+      break-after: avoid;
+    }
+    .office-psalms { font-size: 10pt; color: #333; margin: 0 0 0.15em; }
+    .office-lesson {
+      margin-bottom: 0.25em;
+      break-inside: auto;
+      position: relative;
+      background: #fff;
+      padding: 0.05em 0;
+    }
+    .office-lesson::after {
+      content: "";
+      position: absolute;
+      top: 0;
+      right: 0;
+      bottom: 0;
+      width: 50%;
+      background: #ededed;
+      pointer-events: none;
+      z-index: 0;
+    }
+    .office-lesson-label {
+      font-size: 11pt;
+      font-weight: 600;
+      margin: 0 0 0.05em;
+      break-after: avoid;
+      position: relative;
+      z-index: 1;
+    }
+    .office-text {
+      font-size: 9.5pt;
+      line-height: 1.45;
+      white-space: pre-line;
+      width: 50%;
+      padding-right: 0.5em;
+      box-sizing: border-box;
+      position: relative;
+      z-index: 1;
+    }
+    .office-ref-only {
+      font-size: 9.5pt;
+      color: #444;
+      font-style: italic;
+      width: 50%;
+      padding-right: 0.5em;
+      box-sizing: border-box;
+      position: relative;
+      z-index: 1;
+    }
+
     /* ── Day calendar page ─────────────────────────────────────────── */
     .day-view-page {
       break-before: page;
@@ -330,11 +579,14 @@ export function renderHtml(data: TemplateData): string {
       flex-direction: column;
     }
     .day-view-title { font-size: 20pt; font-weight: 700; margin: 0 0 0.25em; }
-    .day-view-sub { font-size: 12pt; color: #666; margin: 0 0 0.45em; }
+    .day-view-sub { font-size: 12pt; color: #333; margin: 0 0 0.45em; }
     .calendar-shell {
       position: relative;
-      border: 1px solid #bbb;
-      border-radius: 3px;
+      border-style: solid;
+      border-width: var(--box-border-width);
+      border-color: var(--box-border-color);
+      border-radius: var(--box-border-radius);
+      box-sizing: border-box;
       flex: 1 1 auto;
       min-height: 0;
       overflow: hidden;
@@ -354,12 +606,12 @@ export function renderHtml(data: TemplateData): string {
     }
     .calendar-row-label {
       font-size: 10.5pt;
-      color: #666;
+      color: #333;
       text-align: right;
       padding-right: 0.5em;
     }
     .calendar-row-line {
-      border-top: 1px solid #e5e5e5;
+      border-top: 1px solid #bbb;
       display: block;
       height: 0;
       margin-right: 0.5em;
@@ -375,8 +627,8 @@ export function renderHtml(data: TemplateData): string {
       position: absolute;
       left: 0.2em;
       right: 0.2em;
-      border-left: 4px solid #333;
-      background: #f5f5f5;
+      border-left: 4px solid #000;
+      background: #eee;
       border-radius: 3px;
       padding: 0.18em 0.35em;
       overflow: hidden;
@@ -388,14 +640,14 @@ export function renderHtml(data: TemplateData): string {
       white-space: nowrap;
       text-overflow: ellipsis;
     }
-    .calendar-event-sep { color: #999; font-weight: 400; margin: 0 0.15em; }
+    .calendar-event-sep { color: #555; font-weight: 400; margin: 0 0.15em; }
     .calendar-empty {
       position: absolute;
       inset: 0;
       display: flex;
       align-items: center;
       justify-content: center;
-      color: #777;
+      color: #444;
       font-size: 13pt;
     }
   </style>
@@ -407,7 +659,7 @@ export function renderHtml(data: TemplateData): string {
   <!-- Header -->
   <div class="header-row">
     <h1 class="brief-title">Daily Brief</h1>
-    <span class="weather-badge">${esc(weatherLabel(data.weather.weatherCode, data.weather.tempF))}</span>
+    <span class="weather-badge">${wmoIcon(data.weather.weatherCode)} ${esc(weatherLabel(data.weather.weatherCode, data.weather.tempF))}</span>
   </div>
   <div class="date-sub">${esc(data.dateLabel)}</div>
   <hr class="divider">
@@ -416,6 +668,7 @@ export function renderHtml(data: TemplateData): string {
   <div class="panel section-gap">
     <div class="section-title">Overview</div>
     <p class="overview-text">${esc(data.overview)}</p>
+    <p class="delta-text">${esc(data.deltaSinceYesterday)}</p>
   </div>
 
   <!-- Day Agenda -->
@@ -434,6 +687,18 @@ export function renderHtml(data: TemplateData): string {
     <div class="todos-grid">
         ${todosHtml}
     </div>
+  </div>`
+      : ""
+  }
+
+  <!-- Follow-ups -->
+  ${
+    data.followUps.length > 0
+      ? `<div class="panel section-gap">
+    <div class="section-title">Follow-ups</div>
+    <ul class="follow-ups">
+        ${followUpsHtml}
+    </ul>
   </div>`
       : ""
   }
@@ -462,6 +727,8 @@ export function renderHtml(data: TemplateData): string {
       ${ruledLinesFill(28)}
     </div>
   </div>
+
+  ${data.dailyOffice ? renderOfficePage(data.dailyOffice) : ""}
 
 </body>
 </html>`;

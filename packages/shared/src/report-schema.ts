@@ -2,12 +2,8 @@ import { z } from "zod";
 
 export const reportOutputSchema = z.object({
   overview: z.string().min(1),
-  agenda: z.array(z.string().min(1)).min(1).max(12),
-  todos: z.array(z.object({
-    task: z.string().min(1),
-    done: z.boolean().default(false)
-  })).max(20),
-  followUps: z.array(z.string().min(1)).max(10)
+  deltaSinceYesterday: z.string().min(1),
+  followUps: z.array(z.string().min(1)).max(10),
 });
 
 export type ReportOutput = z.infer<typeof reportOutputSchema>;
@@ -15,32 +11,17 @@ export type ReportOutput = z.infer<typeof reportOutputSchema>;
 export const reportOutputJsonSchema = {
   type: "object",
   properties: {
-    overview: { type: "string", description: "2-5 sentence overview of today." },
-    agenda: {
-      type: "array",
-      items: { type: "string" },
-      minItems: 1,
-      maxItems: 12,
-      description: "Ordered day agenda bullets."
-    },
-    todos: {
-      type: "array",
-      maxItems: 20,
-      items: {
-        type: "object",
-        properties: {
-          task: { type: "string" },
-          done: { type: "boolean" }
-        },
-        required: ["task", "done"]
-      }
+    overview: { type: "string", description: "2-5 sentence executive summary covering key meetings, tasks, and priorities." },
+    deltaSinceYesterday: {
+      type: "string",
+      description: "1-3 sentences summarizing what changed since the previous brief: new items, resolved tasks, shifted deadlines."
     },
     followUps: {
       type: "array",
       items: { type: "string" },
       maxItems: 10,
-      description: "Calls, emails, and follow-up actions."
+      description: "Calls, emails, and follow-up actions to take today."
     }
   },
-  required: ["overview", "agenda", "todos", "followUps"]
+  required: ["overview", "deltaSinceYesterday", "followUps"]
 } as const;

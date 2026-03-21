@@ -1,4 +1,4 @@
-import type { RemarkableAdapter, RemarkableUploadResult } from "./adapter";
+import type { RemarkableAdapter, RemarkableUploadResult, RemarkableListResult, RemarkableDownloadResult, MultiUploadItem, MultiUploadResult } from "./adapter";
 
 type RemarkableEnv = {
   REMARKABLE_IMPORT_URL?: string;
@@ -46,5 +46,21 @@ export class HttpRemarkableAdapter implements RemarkableAdapter {
       message: "Uploaded PDF to reMarkable import endpoint",
       remotePath: `${args.folder}/${args.fileName}`
     };
+  }
+
+  async uploadMultiplePdfs(items: MultiUploadItem[]): Promise<MultiUploadResult> {
+    const results: RemarkableUploadResult[] = [];
+    for (const item of items) {
+      results.push(await this.uploadPdf(item));
+    }
+    return { results, allOk: results.every((r) => r.ok) };
+  }
+
+  async listDocuments(): Promise<RemarkableListResult> {
+    return { ok: false, documents: [], message: "HTTP adapter does not support listing" };
+  }
+
+  async downloadDocument(_docId: string): Promise<RemarkableDownloadResult> {
+    return { ok: false, message: "HTTP adapter does not support download" };
   }
 }

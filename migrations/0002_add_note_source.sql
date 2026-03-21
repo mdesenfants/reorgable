@@ -1,5 +1,3 @@
-BEGIN TRANSACTION;
-
 CREATE TABLE items_new (
   id TEXT PRIMARY KEY,
   source_type TEXT NOT NULL CHECK(source_type IN ('task', 'document', 'email', 'note')),
@@ -19,5 +17,3 @@ ALTER TABLE items_new RENAME TO items;
 
 CREATE INDEX IF NOT EXISTS idx_items_created_at ON items(created_at);
 CREATE INDEX IF NOT EXISTS idx_items_source_type ON items(source_type);
-
-COMMIT;

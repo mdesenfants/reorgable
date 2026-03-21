@@ -24,6 +24,12 @@
   },
   "report": {
     "overview": "A steady start to the week. Two feature branches are ready for review and the deploy pipeline is green. A handful of open tasks from last week carry over, and one vendor thread needs a reply. The afternoon is clear for focused work.",
+    "deltaSinceYesterday": "PR #42 received new comments over the weekend. The vendor email from Friday is still awaiting a reply. Integration test suite was last run Thursday.",
+    "followUps": [
+      "Reply to vendor email re: contract renewal",
+      "Ping Alex for updated budget assumptions",
+      "Post release note draft in #releases channel"
+    ],
     "agendaEvents": [
       {
         "title": "Team standup",

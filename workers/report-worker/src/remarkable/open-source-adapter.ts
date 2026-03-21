@@ -1,4 +1,4 @@
-import type { RemarkableAdapter, RemarkableUploadResult } from "./adapter";
+import type { RemarkableAdapter, RemarkableUploadResult, RemarkableListResult, RemarkableDownloadResult, RemarkableDocument, MultiUploadItem, MultiUploadResult } from "./adapter";
 
 type OpenSourceEnv = {
   REMARKABLE_DEVICE_TOKEN?: string;
@@ -93,12 +93,106 @@ export class OpenSourceRemarkableAdapter implements RemarkableAdapter {
       return {
         ok: true,
         message: `Uploaded via open-source-compatible reMarkable API flow (${payload.docID})`,
-        remotePath: `${args.folder}/${args.fileName}`
+        remotePath: `${args.folder}/${args.fileName}`,
+        docId: payload.docID,
       };
     } catch (error) {
       return {
         ok: false,
         message: error instanceof Error ? error.message : "Unknown reMarkable upload error"
+      };
+    }
+  }
+
+  async uploadMultiplePdfs(items: MultiUploadItem[]): Promise<MultiUploadResult> {
+    const results: RemarkableUploadResult[] = [];
+    for (const item of items) {
+      results.push(await this.uploadPdf(item));
+    }
+    return { results, allOk: results.every((r) => r.ok) };
+  }
+
+  async listDocuments(): Promise<RemarkableListResult> {
+    try {
+      const token = await this.getSessionToken();
+      const internalHost = this.env.REMARKABLE_INTERNAL_HOST ?? DEFAULT_INTERNAL_HOST;
+
+      const response = await fetch(`${internalHost}/doc/v2/files`, {
+        method: "GET",
+        headers: {
+          authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!response.ok) {
+        return {
+          ok: false,
+          documents: [],
+          message: `List failed: ${response.status} ${await response.text()}`,
+        };
+      }
+
+      const items = (await response.json()) as Array<{
+        ID: string;
+        VissibleName?: string;
+        Type?: string;
+        Parent?: string;
+        fileType?: string;
+        ModifiedClient?: string;
+      }>;
+
+      const documents: RemarkableDocument[] = items.map((item) => ({
+        id: item.ID,
+        name: item.VissibleName ?? "",
+        type: (item.Type ?? "DocumentType") as RemarkableDocument["type"],
+        parentId: item.Parent ?? "",
+        fileType: item.fileType,
+        modifiedAt: item.ModifiedClient,
+      }));
+
+      return {
+        ok: true,
+        documents,
+        message: `Listed ${documents.length} documents`,
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        documents: [],
+        message: error instanceof Error ? error.message : "Unknown list error",
+      };
+    }
+  }
+
+  async downloadDocument(docId: string): Promise<RemarkableDownloadResult> {
+    try {
+      const token = await this.getSessionToken();
+      const internalHost = this.env.REMARKABLE_INTERNAL_HOST ?? DEFAULT_INTERNAL_HOST;
+
+      const response = await fetch(`${internalHost}/doc/v2/files/${encodeURIComponent(docId)}`, {
+        method: "GET",
+        headers: {
+          authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!response.ok) {
+        return {
+          ok: false,
+          message: `Download failed: ${response.status} ${await response.text()}`,
+        };
+      }
+
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      return {
+        ok: true,
+        bytes,
+        message: `Downloaded ${bytes.length} bytes`,
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        message: error instanceof Error ? error.message : "Unknown download error",
       };
     }
   }
