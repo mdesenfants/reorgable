@@ -22,9 +22,29 @@ export interface Env {
   INGEST_URL: string;
   INGEST_API_TOKEN: string;
   INGEST_SERVICE?: Fetcher;
+  WORKER_TOKEN?: string;
 }
 
 // ---------------------------------------------------------------------------
+// Auth helper
+// ---------------------------------------------------------------------------
+
+function isAuthorized(request: Request, env: Env): boolean {
+  if (!env.WORKER_TOKEN) {
+    // Log a warning so operators notice the unprotected state in production logs.
+    console.warn("WORKER_TOKEN is not set; endpoints are unprotected. Set this secret for production use.");
+    return true; // open in development / unconfigured deployments
+  }
+  const authHeader = request.headers.get("Authorization") ?? "";
+  return authHeader === `Bearer ${env.WORKER_TOKEN}`;
+}
+
+function unauthorizedResponse(): Response {
+  return new Response(JSON.stringify({ error: "Unauthorized" }), {
+    status: 401,
+    headers: { "Content-Type": "application/json" },
+  });
+}
 // Microsoft Graph auth
 // ---------------------------------------------------------------------------
 
@@ -108,7 +128,10 @@ async function graphGetAll<T>(
     const res = await fetch(nextLink, {
       headers: { Authorization: `Bearer ${token}` },
     });
-    if (!res.ok) break;
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Graph pagination request failed ${res.status}: ${text}`);
+    }
     const page = (await res.json()) as {
       value: T[];
       "@odata.nextLink"?: string;
@@ -428,6 +451,7 @@ export default {
 
     // Allow manually triggering a sync via POST /run (for testing)
     if (request.method === "POST" && pathname === "/run") {
+      if (!isAuthorized(request, env)) return unauthorizedResponse();
       const result = await runSync(env);
       return new Response(JSON.stringify(result), {
         status: 200,
@@ -437,6 +461,7 @@ export default {
 
     // Create a new task in Microsoft To Do
     if (request.method === "POST" && pathname === "/tasks/create") {
+      if (!isAuthorized(request, env)) return unauthorizedResponse();
       try {
         const body = (await request.json()) as { title?: string; dueDate?: string; listId?: string };
         if (!body.title) {
@@ -462,6 +487,7 @@ export default {
 
     // Complete a task in Microsoft To Do
     if (request.method === "POST" && pathname === "/tasks/complete") {
+      if (!isAuthorized(request, env)) return unauthorizedResponse();
       try {
         const body = (await request.json()) as { taskId?: string; listId?: string };
         if (!body.taskId) {

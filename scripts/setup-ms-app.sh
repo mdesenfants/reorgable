@@ -35,20 +35,23 @@ else
 fi
 
 echo "==> Looking up Graph permission UUIDs..."
-# Tasks.Read.All and Calendars.Read application permissions
+# Tasks.Read.All, Tasks.ReadWrite.All, and Calendars.Read application permissions
 TASKS_READ_ALL_ID=$(az ad sp show --id "$GRAPH_API_ID" \
   --query "appRoles[?value=='Tasks.Read.All'].id | [0]" -o tsv)
+TASKS_READWRITE_ALL_ID=$(az ad sp show --id "$GRAPH_API_ID" \
+  --query "appRoles[?value=='Tasks.ReadWrite.All'].id | [0]" -o tsv)
 CALENDARS_READ_ID=$(az ad sp show --id "$GRAPH_API_ID" \
   --query "appRoles[?value=='Calendars.Read'].id | [0]" -o tsv)
 
-echo "    Tasks.Read.All:  $TASKS_READ_ALL_ID"
-echo "    Calendars.Read:  $CALENDARS_READ_ID"
+echo "    Tasks.Read.All:       $TASKS_READ_ALL_ID"
+echo "    Tasks.ReadWrite.All:  $TASKS_READWRITE_ALL_ID"
+echo "    Calendars.Read:       $CALENDARS_READ_ID"
 
 echo "==> Adding application permissions..."
 az ad app permission add \
   --id "$APP_ID" \
   --api "$GRAPH_API_ID" \
-  --api-permissions "${TASKS_READ_ALL_ID}=Role" "${CALENDARS_READ_ID}=Role"
+  --api-permissions "${TASKS_READ_ALL_ID}=Role" "${TASKS_READWRITE_ALL_ID}=Role" "${CALENDARS_READ_ID}=Role"
 
 echo "==> Granting admin consent (requires Global Admin or Privileged Role Admin)..."
 if az ad app permission admin-consent --id "$APP_ID" 2>&1; then
@@ -93,4 +96,10 @@ echo "  wrangler secret put MS_TENANT_ID     -c workers/microsoft-graph-sync-wor
 echo "  wrangler secret put MS_USER_ID       -c workers/microsoft-graph-sync-worker/wrangler.toml"
 echo "  wrangler secret put INGEST_URL       -c workers/microsoft-graph-sync-worker/wrangler.toml"
 echo "  wrangler secret put INGEST_API_TOKEN -c workers/microsoft-graph-sync-worker/wrangler.toml"
+echo ""
+echo "  # Shared secret for authenticating calls from the report worker to this worker:"
+echo "  # Generate a random token, e.g.: openssl rand -hex 32"
+echo "  wrangler secret put WORKER_TOKEN        -c workers/microsoft-graph-sync-worker/wrangler.toml"
+echo "  wrangler secret put MS_GRAPH_WORKER_TOKEN -c workers/report-worker/wrangler.toml"
+echo "  # (Both WORKER_TOKEN and MS_GRAPH_WORKER_TOKEN must be set to the same value)"
 echo "============================================================"

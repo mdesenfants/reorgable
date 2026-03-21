@@ -132,8 +132,23 @@ export function renderReferenceHtml(data: ReferenceTemplateData): string {
   <title>Reference \u2013 ${esc(data.dateLabel)}</title>
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400..900;1,400..900&display=swap');
-    @import url('https://cdnjs.cloudflare.com/ajax/libs/weather-icons/2.0.12/css/weather-icons.min.css');
-    @page { size: Letter; margin: 0.55in 0.65in 0.5in; }
+    /* Minimal weather icon styles (local, no external CDN dependency).
+       Some WMO conditions share an emoji because Unicode doesn't have a unique
+       glyph for every precipitation variant (e.g., rain vs. rain-mix vs. rain-wind). */
+    .wi { font-style: normal; display: inline-block; margin-right: 3px; }
+    .wi-day-sunny::before         { content: "☀"; }
+    .wi-day-sunny-overcast::before{ content: "🌤"; }
+    .wi-day-cloudy::before        { content: "⛅"; }
+    .wi-cloudy::before            { content: "☁"; }
+    .wi-fog::before               { content: "🌫"; }
+    .wi-sprinkle::before,
+    .wi-showers::before           { content: "🌦"; }
+    .wi-rain-mix::before,
+    .wi-rain::before,
+    .wi-rain-wind::before         { content: "🌧"; }
+    .wi-snow::before              { content: "❄"; }
+    .wi-thunderstorm::before      { content: "⛈"; }
+    .wi-na::before                { content: "❓"; }
     html, body { margin: 0; padding: 0; }
     body {
       font-family: 'Playfair Display', serif;
@@ -325,7 +340,23 @@ export function renderHtml(data: TemplateData): string {
   <title>Daily Brief \u2013 ${esc(data.dateLabel)}</title>
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400..900;1,400..900&display=swap');
-    @import url('https://cdnjs.cloudflare.com/ajax/libs/weather-icons/2.0.12/css/weather-icons.min.css');
+    /* Minimal weather icon styles (local, no external CDN dependency).
+       Some WMO conditions share an emoji because Unicode doesn't have a unique
+       glyph for every precipitation variant (e.g., rain vs. rain-mix vs. rain-wind). */
+    .wi { font-style: normal; display: inline-block; margin-right: 3px; }
+    .wi-day-sunny::before         { content: "☀"; }
+    .wi-day-sunny-overcast::before{ content: "🌤"; }
+    .wi-day-cloudy::before        { content: "⛅"; }
+    .wi-cloudy::before            { content: "☁"; }
+    .wi-fog::before               { content: "🌫"; }
+    .wi-sprinkle::before,
+    .wi-showers::before           { content: "🌦"; }
+    .wi-rain-mix::before,
+    .wi-rain::before,
+    .wi-rain-wind::before         { content: "🌧"; }
+    .wi-snow::before              { content: "❄"; }
+    .wi-thunderstorm::before      { content: "⛈"; }
+    .wi-na::before                { content: "❓"; }
 
     /* ── Design System ─────────────────────────────────────────────── */
     @page {

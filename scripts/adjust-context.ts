@@ -26,7 +26,7 @@ import { join } from "node:path";
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_MODEL = process.env.GEMINI_MODEL ?? "gemini-2.0-flash";
-const KV_NAMESPACE_ID = "aff13c4ce8b049fc8869a526fb392c85";
+const KV_NAMESPACE_ID = process.env.CLOUDFLARE_KV_NAMESPACE_ID ?? "aff13c4ce8b049fc8869a526fb392c85";
 const KV_KEY = "operator_context";
 
 function fail(msg: string): never {

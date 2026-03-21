@@ -39,7 +39,7 @@ Four Cloudflare Workers:
 |---|---|---|
 | `workers/ingest-worker` | `reorgable-ingest` | Authenticated REST API for all ingestion |
 | `workers/email-worker` | `reorgable-email` | Receives Cloudflare Email Routing events, stores EML to R2, forwards metadata to ingest |
-| `workers/microsoft-graph-sync-worker` | `reorgable-ms-graph-sync` | Syncs Microsoft To Do, flagged emails, and Outlook calendar to ingest |
+| `workers/microsoft-graph-sync-worker` | `reorgable-ms-sync` | Syncs Microsoft To Do, flagged emails, and Outlook calendar to ingest |
 | `workers/report-worker` | `reorgable-report` | Scheduled report pipeline: summarize → render → upload |
 
 Cloudflare resources used:

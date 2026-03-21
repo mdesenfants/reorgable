@@ -17,6 +17,7 @@ type Env = {
   REMARKABLE_WEBAPP_HOST?: string;
   REMARKABLE_INTERNAL_HOST?: string;
   MS_GRAPH_WORKER_URL?: string;
+  MS_GRAPH_WORKER_TOKEN?: string;
 };
 
 type IngestedItem = {
@@ -789,11 +790,16 @@ async function dispatchFollowUpsToGraph(
   let dispatched = 0;
   let failed = 0;
 
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (env.MS_GRAPH_WORKER_TOKEN) {
+    headers["Authorization"] = `Bearer ${env.MS_GRAPH_WORKER_TOKEN}`;
+  }
+
   for (const followUp of followUps) {
     try {
       const res = await fetch(url, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({ title: followUp }),
       });
       if (res.ok) dispatched++;
@@ -831,7 +837,7 @@ async function runDailyReport(env: Env, opts?: { force?: boolean; lookbackHours?
 
   // Skip report if there's nothing meaningful to include
   if (filteredItems.length === 0) {
-    await env.STATE_KV.put("last_report_cursor", cursor);
+    await env.STATE_KV.put("last_report_at", now.toISOString());
     return { ok: true, skipped: true, reason: "No items to include in brief", cursorUsed: cursor };
   }
 

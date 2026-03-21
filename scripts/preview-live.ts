@@ -33,7 +33,7 @@ import { reportOutputSchema, reportOutputJsonSchema } from "../packages/shared/s
 // ── Config ──────────────────────────────────────────────────────────
 
 const D1_DB_NAME = "daily_brief";
-const KV_NAMESPACE_ID = "aff13c4ce8b049fc8869a526fb392c85";
+const KV_NAMESPACE_ID = process.env.CLOUDFLARE_KV_NAMESPACE_ID ?? "aff13c4ce8b049fc8869a526fb392c85";
 const PACIFIC_TIMEZONE = "America/Los_Angeles";
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_MODEL = process.env.GEMINI_MODEL ?? "gemini-3-flash-preview";
