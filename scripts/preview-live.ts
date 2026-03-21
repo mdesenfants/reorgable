@@ -56,7 +56,7 @@ const { values: args } = parseArgs({
 // ── Wrangler CLI helpers ────────────────────────────────────────────
 
 function d1Query<T>(sql: string): T[] {
-  const escaped = sql.replace(/"/g, '\\"');
+  const escaped = sql.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
   const raw = execSync(
     `npx wrangler d1 execute "${D1_DB_NAME}" --remote --json --command="${escaped}"`,
     { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], maxBuffer: 10 * 1024 * 1024 },
