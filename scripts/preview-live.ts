@@ -30,6 +30,14 @@ import { renderHtml, type TemplateData } from "../workers/report-worker/src/temp
 import { fetchDailyOffice, type DailyOfficeData } from "../workers/report-worker/src/daily-office.js";
 import { reportOutputSchema, reportOutputJsonSchema } from "../packages/shared/src/report-schema.js";
 
+type PreviewKVNamespace = {
+  get: (key: string) => Promise<string | null>;
+  put: (key: string, value: string, options?: unknown) => Promise<void>;
+  delete: (key: string) => Promise<void>;
+  list: () => Promise<{ keys: unknown[]; list_complete: boolean }>;
+  getWithMetadata: (key: string) => Promise<{ value: string | null; metadata: unknown; cacheStatus: unknown }>;
+};
+
 // ── Config ──────────────────────────────────────────────────────────
 
 const D1_DB_NAME = "daily_brief";
@@ -79,14 +87,14 @@ function kvGet(key: string): string | null {
 
 // ── Fake KVNamespace for daily-office (no caching, just pass-through) ──
 
-function makeNullKV(): KVNamespace {
+function makeNullKV(): PreviewKVNamespace {
   return {
     get: async () => null,
     put: async () => {},
     delete: async () => {},
     list: async () => ({ keys: [], list_complete: true }),
     getWithMetadata: async () => ({ value: null, metadata: null, cacheStatus: null }),
-  } as unknown as KVNamespace;
+  };
 }
 
 // ── Types (mirrored from worker) ────────────────────────────────────
@@ -105,6 +113,9 @@ type ItemMetadata = {
   isUnread?: boolean;
   inInbox?: boolean;
   tags?: string[];
+  relatedEmailSubject?: string;
+  relatedEmailFrom?: string;
+  relatedEmailMessageId?: string;
   from?: string;
   to?: string;
   startAt?: string;
@@ -116,7 +127,8 @@ type ItemMetadata = {
 };
 
 type WeatherSnapshot = {
-  tempF: number;
+  highF: number;
+  lowF: number;
   weatherCode: number;
   hourly: Array<{ hour: number; tempF: number; weatherCode: number }>;
 };
@@ -286,19 +298,16 @@ async function fetchWeather(): Promise<WeatherSnapshot> {
   const hourly: WeatherSnapshot["hourly"] = [];
   const times = body.hourly?.time ?? [], temps = body.hourly?.temperature_2m ?? [], codes = body.hourly?.weather_code ?? [];
   for (let i = 0; i < times.length; i++) { const h = parseInt(times[i].split("T")[1].split(":")[0], 10); if (h >= 6 && h <= 21) hourly.push({ hour: h, tempF: temps[i] ?? 0, weatherCode: codes[i] ?? -1 }); }
-  return { tempF: body.current?.temperature_2m ?? 0, weatherCode: body.current?.weather_code ?? -1, hourly };
+  const forecastTemps = temps.filter((temp) => typeof temp === "number");
+  const highF = forecastTemps.length ? Math.max(...forecastTemps) : body.current?.temperature_2m ?? 0;
+  const lowF = forecastTemps.length ? Math.min(...forecastTemps) : body.current?.temperature_2m ?? 0;
+  return { highF, lowF, weatherCode: body.current?.weather_code ?? -1, hourly };
 }
 
 function getPreviousOverview(): string | undefined {
   const rows = d1Query<{ summary_json: string }>("SELECT summary_json FROM report_runs ORDER BY run_at DESC LIMIT 1");
   if (!rows[0]?.summary_json) return undefined;
   try { return (JSON.parse(rows[0].summary_json) as { overview?: string }).overview || undefined; } catch { return undefined; }
-}
-
-function getPreviousFollowUps(): string[] | undefined {
-  const rows = d1Query<{ summary_json: string }>("SELECT summary_json FROM report_runs ORDER BY run_at DESC LIMIT 1");
-  if (!rows[0]?.summary_json) return undefined;
-  try { const p = JSON.parse(rows[0].summary_json) as { followUps?: string[] }; return p.followUps?.length ? p.followUps : undefined; } catch { return undefined; }
 }
 
 function getPreviousEngagement(): EngagementSummary | undefined {
@@ -321,7 +330,7 @@ function getPreviousEngagement(): EngagementSummary | undefined {
 
 function buildGeminiPrompt(
   items: IngestedItem[], weather: WeatherSnapshot, dateLabel: string,
-  previousOverview?: string, previousFollowUps?: string[],
+  previousOverview?: string,
   conflicts?: CalendarConflict[], engagement?: EngagementSummary,
   operatorContext?: string,
 ): string {
@@ -336,19 +345,18 @@ function buildGeminiPrompt(
   const lines = [
     "You are generating a fixed-format daily brief.",
     `Date: ${dateLabel}`, `Timezone: Pacific Time (America/Los_Angeles)`,
-    `Weather: ${weather.tempF}F code ${weather.weatherCode}`,
+    `Weather: high ${weather.highF.toFixed(0)}F, low ${weather.lowF.toFixed(0)}F, code ${weather.weatherCode}`,
     "Return JSON matching the schema exactly.",
     "Guidance:",
     "- overview: concise executive summary covering key meetings, tasks, and priorities",
+    "- overview: first sentence must describe weather with daily high/low and condition",
     "- deltaSinceYesterday: summarize what changed since yesterday",
-    "- followUps: list specific calls, emails, messages, or actions to take today",
     "- use the full content of emails and calendar events",
     "- focus on key dependencies and communication risk",
     "- all times shown are already in Pacific Time",
   ];
   if (operatorContext) lines.push("", "Operator guidance:", operatorContext);
   if (previousOverview) lines.push("", "Yesterday's overview:", previousOverview);
-  if (previousFollowUps?.length) { lines.push("", "Yesterday's follow-ups:"); for (const f of previousFollowUps) lines.push(`- ${f}`); }
   if (conflicts?.length) { lines.push("", "⚠ Calendar conflicts:"); for (const c of conflicts) lines.push(`- "${c.eventA}" and "${c.eventB}" overlap by ${c.overlapMinutes}min`); }
   if (engagement) {
     const s = engagement.stillOnDevice ? `still on device (${engagement.retentionHours ?? "?"}h)` : `removed after ${engagement.retentionHours ?? "?"}h`;
@@ -367,12 +375,12 @@ function extractJsonObject(text: string): string {
 
 async function summarizeWithGemini(
   items: IngestedItem[], weather: WeatherSnapshot, dateLabel: string,
-  previousOverview?: string, previousFollowUps?: string[],
+  previousOverview?: string,
   conflicts?: CalendarConflict[], engagement?: EngagementSummary,
   operatorContext?: string,
 ) {
   if (!GEMINI_API_KEY) throw new Error("Missing GEMINI_API_KEY env var");
-  const prompt = buildGeminiPrompt(items, weather, dateLabel, previousOverview, previousFollowUps, conflicts, engagement, operatorContext);
+  const prompt = buildGeminiPrompt(items, weather, dateLabel, previousOverview, conflicts, engagement, operatorContext);
 
   console.log("  Calling Gemini...");
   const res = await fetch(
@@ -429,11 +437,10 @@ async function main(): Promise<void> {
     fetchDailyOffice(makeNullKV(), pacificDate).catch(() => undefined),
   ]);
   const previousOverview = getPreviousOverview();
-  const previousFollowUps = getPreviousFollowUps();
   const previousEngagement = getPreviousEngagement();
   const operatorContext = kvGet("operator_context");
 
-  console.log(`  Weather: ${weather.tempF}°F, code ${weather.weatherCode}`);
+  console.log(`  Weather: H ${weather.highF.toFixed(0)}° / L ${weather.lowF.toFixed(0)}°, code ${weather.weatherCode}`);
   console.log(`  Daily Office: ${dailyOffice ? `${dailyOffice.season} ${dailyOffice.week} ${dailyOffice.day}` : "unavailable"}`);
 
   // 3. Build structured data
@@ -447,7 +454,7 @@ async function main(): Promise<void> {
   console.log("③ Generating summary with Gemini...");
   const llm = await summarizeWithGemini(
     filtered, weather, dateLabel,
-    previousOverview, previousFollowUps, conflicts,
+    previousOverview, conflicts,
     previousEngagement, operatorContext ?? undefined,
   );
 
@@ -457,7 +464,6 @@ async function main(): Promise<void> {
     dateLabel, weather,
     overview: llm.overview,
     deltaSinceYesterday: llm.deltaSinceYesterday,
-    followUps: llm.followUps,
     agendaEvents, todos, noteLines,
     dailyOffice: dailyOffice ?? undefined,
   };

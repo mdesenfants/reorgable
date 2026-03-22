@@ -93,17 +93,16 @@ Here's what happens:
 1. **Gather items** — query D1 for everything ingested since the last run
 2. **Filter for relevance** — only inbox emails linked to open tasks are included; completed tasks are excluded
 3. **Build structured sections**:
-   - Calendar agenda (today's events, sorted by start time)
+  - Calendar agenda (today's events, deduplicated across calendars and sorted by start time)
    - Conflict detection (overlapping meetings are flagged)
-   - To-do checklist (open tasks from Google Tasks / Microsoft To Do)
+  - To-do checklist (open tasks from Google Tasks / Microsoft To Do, with completed child tasks hidden)
    - Notes (quick captures from the note endpoint)
-4. **Fetch context** — pull yesterday's overview and follow-ups from the last `report_runs` row
+4. **Fetch context** — pull yesterday's overview from the last `report_runs` row
 5. **Call Gemini** — send the full item list, weather forecast, yesterday's context, and any calendar conflicts to the LLM with a structured JSON schema. Gemini returns:
-   - A 2–5 sentence executive overview
+  - A 2–5 sentence executive overview (first sentence includes daily weather high/low and condition)
    - A delta summary (what changed since yesterday)
-   - Concrete follow-up actions (unresolved items from yesterday carry forward)
 6. **Render the PDF** — Puppeteer prints a multi-page Letter-format document:
-   - **Page 1+**: header with weather, overview, delta text, day agenda, to-do checklist with checkboxes, follow-ups panel
+  - **Page 1+**: header with weather high/low, overview, delta text, day agenda, to-do checklist with checkboxes
    - **Day View page**: a visual 6 AM–9 PM calendar with event blocks and hourly weather
    - **Notes page**: any captured notes plus ruled lines for handwriting
 7. **Render a reference appendix** — if there are emails or notes with longer bodies, a second PDF is generated with the full text of each item
@@ -141,7 +140,7 @@ This queries the reMarkable cloud for document presence. If you've deleted or ar
 
 ### Tomorrow morning — the cycle repeats
 
-When the next brief generates, Gemini sees yesterday's overview and follow-ups. Unresolved items carry forward automatically. The delta summary highlights what changed overnight. Yesterday's PDF moves to `/Briefs` for archival.
+When the next brief generates, Gemini sees yesterday's overview and compares deltas against new task/email/calendar context. The delta summary highlights what changed overnight. Yesterday's PDF moves to `/Briefs` for archival.
 
 ## Project layout
 
@@ -281,7 +280,7 @@ printf "%s" "<ingest-url>"   | wrangler secret put INGEST_URL       -c workers/m
 printf "%s" "<ingest-token>" | wrangler secret put INGEST_API_TOKEN -c workers/microsoft-graph-sync-worker/wrangler.toml
 ```
 
-The worker runs on a daily cron (11:00 UTC) and also exposes `POST /tasks/create` and `POST /tasks/complete` for the report worker to write back follow-ups.
+The worker runs on a daily cron (11:00 UTC) and also exposes `POST /tasks/create` and `POST /tasks/complete` for manual task management.
 
 ### 7. Pair reMarkable (optional)
 
@@ -449,6 +448,12 @@ Relevancy refresh rules:
 - **Email**: `isStarred=true` bumps relevancy. `isStarred=false` updates content only.
 
 For reliable dedup, always send stable `externalId` values from source systems.
+
+Additional report-layer deduplication behavior:
+
+- Calendar events with matching normalized title and exact start/end timestamps are collapsed so shared events from multiple calendars render once.
+- Repeating task duplicates are grouped by normalized title + parent task; overdue prior instances are suppressed once a newer instance exists.
+- Completed child tasks are omitted from the report checklist.
 
 ---
 

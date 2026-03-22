@@ -2,14 +2,18 @@
 // Used by scripts/preview-report.ts (local Puppeteer) and, in Phase 2,
 // by the Cloudflare Worker via @cloudflare/puppeteer (Browser Rendering).
 
-import type { DailyOfficeData, DailyOfficeSection, DailyOfficeLesson } from "./daily-office";
+import type { DailyOfficeData, DailyOfficeLesson } from "./daily-office";
 
 export interface TemplateData {
   dateLabel: string;
-  weather: { tempF: number; weatherCode: number; hourly: Array<{ hour: number; tempF: number; weatherCode: number }> };
+  weather: {
+    highF: number;
+    lowF: number;
+    weatherCode: number;
+    hourly: Array<{ hour: number; tempF: number; weatherCode: number }>;
+  };
   overview: string;
   deltaSinceYesterday: string;
-  followUps: string[];
   agendaEvents: Array<{
     title: string;
     startAt: string;
@@ -60,9 +64,13 @@ const WMO: Partial<Record<number, string>> = {
   99: "Thunderstorm w/ heavy hail",
 };
 
-function weatherLabel(code: number, tempF: number): string {
+function weatherLabel(code: number): string {
   const desc = WMO[code] ?? `WMO ${code}`;
-  return `${tempF.toFixed(0)}°F · ${desc}`;
+  return desc;
+}
+
+function weatherRangeLabel(code: number, highF: number, lowF: number): string {
+  return `H ${highF.toFixed(0)}° / L ${lowF.toFixed(0)}° · ${weatherLabel(code)}`;
 }
 
 // WMO code → Weather Icons class (free vector icon font, crisp on e-ink).
@@ -199,21 +207,14 @@ function renderOfficeLesson(name: string, lesson?: DailyOfficeLesson): string {
       </div>`;
 }
 
-function renderOfficeSection(label: string, section: DailyOfficeSection): string {
-  const psalmText = section.psalms.length > 0 ? section.psalms.join(", ") : "None";
-  return `<div class="office-section">
-      <div class="office-section-title">${esc(label)}</div>
-      <div class="office-psalms">Psalms: ${esc(psalmText)}</div>
-      ${renderOfficeLesson("First Lesson", section.first)}
-      ${renderOfficeLesson("Second Lesson", section.second)}
-      ${renderOfficeLesson("Gospel", section.gospel)}
-    </div>`;
-}
-
 function renderOfficePage(office: DailyOfficeData): string {
   const subtitle = office.title
     ? `${office.title} \u00b7 ${office.day}`
     : `${office.week} \u00b7 ${office.day}`;
+  const psalmText = office.study.psalms.length > 0 ? office.study.psalms.join(", ") : "None";
+  const lessons = office.study.lessons
+    .map((lesson, index) => renderOfficeLesson(`Lesson ${index + 1}`, lesson))
+    .join("");
   return `
   <div class="office-page">
     <div class="office-title">Daily Office</div>
@@ -221,8 +222,11 @@ function renderOfficePage(office: DailyOfficeData): string {
     <div class="office-season">${esc(office.season)}</div>
     <hr class="divider">
     <div class="office-columns">
-      ${renderOfficeSection("Morning Prayer", office.morning)}
-      ${renderOfficeSection("Evening Prayer", office.evening)}
+      <div class="office-section">
+        <div class="office-section-title">Study</div>
+        <div class="office-psalms">Psalms: ${esc(psalmText)}</div>
+        ${lessons}
+      </div>
     </div>
   </div>`;
 }
@@ -287,10 +291,6 @@ export function renderHtml(data: TemplateData): string {
 
   const notesCaptureHtml = data.noteLines
     .map((line) => `<li>${esc(line)}</li>`)
-    .join("\n          ");
-
-  const followUpsHtml = data.followUps
-    .map((line) => `<li><span>${esc(line)}</span></li>`)
     .join("\n          ");
 
   const dayStartMinutes = 6 * 60;
@@ -481,15 +481,6 @@ export function renderHtml(data: TemplateData): string {
     }
     .weather-badge .wi { margin-right: 0.2em; }
     .delta-text { font-size: 12pt; color: #333; margin: 0 0 0.1em; font-style: italic; }
-    .follow-ups { list-style: none; padding: 0; margin: 0; }
-    .follow-ups li {
-      display: flex;
-      gap: 0.35em;
-      line-height: 1.45;
-      margin-bottom: 0.15em;
-      font-size: 13pt;
-    }
-    .follow-ups li::before { content: "→"; color: #444; flex-shrink: 0; }
     .hour-weather {
       display: block;
       font-size: 8pt;
@@ -690,7 +681,7 @@ export function renderHtml(data: TemplateData): string {
   <!-- Header -->
   <div class="header-row">
     <h1 class="brief-title">Daily Brief</h1>
-    <span class="weather-badge">${wmoIcon(data.weather.weatherCode)} ${esc(weatherLabel(data.weather.weatherCode, data.weather.tempF))}</span>
+    <span class="weather-badge">${wmoIcon(data.weather.weatherCode)} ${esc(weatherRangeLabel(data.weather.weatherCode, data.weather.highF, data.weather.lowF))}</span>
   </div>
   <div class="date-sub">${esc(data.dateLabel)}</div>
   <hr class="divider">
@@ -721,20 +712,6 @@ export function renderHtml(data: TemplateData): string {
   </div>`
       : ""
   }
-
-  <!-- Follow-ups -->
-  ${
-    data.followUps.length > 0
-      ? `<div class="panel section-gap">
-    <div class="section-title">Follow-ups</div>
-    <ul class="follow-ups">
-        ${followUpsHtml}
-    </ul>
-  </div>`
-      : ""
-  }
-
-
 
   <!-- ═══ PAGE 2: DAY CALENDAR VIEW (6AM-9PM) ═══ -->
   <div class="day-view-page">
