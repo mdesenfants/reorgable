@@ -544,8 +544,6 @@ export function renderHtml(data: TemplateData): string {
       min-height: 0;
       overflow: hidden;
       background: #fff;
-      margin-left: -0.65in;
-      margin-right: -0.65in;
     }
     .calendar-grid {
       position: absolute;
@@ -556,7 +554,7 @@ export function renderHtml(data: TemplateData): string {
       left: 0;
       right: 0;
       display: grid;
-      grid-template-columns: calc(0.65in + 84px) 1fr;
+      grid-template-columns: 84px 1fr;
       align-items: center;
     }
     .calendar-row-label {
@@ -564,7 +562,6 @@ export function renderHtml(data: TemplateData): string {
       color: #333;
       text-align: right;
       padding-right: 0.5em;
-      padding-left: 0.65in;
     }
     .calendar-row-line {
       border-top: 1px solid #bbb;
@@ -576,8 +573,8 @@ export function renderHtml(data: TemplateData): string {
       position: absolute;
       top: 0;
       bottom: 0;
-      left: calc(0.65in + 88px);
-      right: 0.65in;
+      left: 88px;
+      right: 0.5em;
     }
     .calendar-event {
       position: absolute;
