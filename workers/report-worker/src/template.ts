@@ -166,9 +166,7 @@ export function renderReferenceHtml(data: ReferenceTemplateData): string {
     .divider { border: none; border-top: 1.5px solid #555; margin: 0.3em 0 0.6em; }
     .ref-item {
       break-inside: avoid;
-      border: 1.5px solid #666;
-      border-radius: 3px;
-      padding: 0.5em 0.7em;
+      padding: 0.5em 0;
       margin-bottom: 0.5em;
     }
     .ref-source {
@@ -197,8 +195,9 @@ function renderOfficeLesson(name: string, lesson?: DailyOfficeLesson, headerHtml
   const textBlock = lesson.text
     ? `<div class="office-text">${esc(lesson.text)}</div>`
     : `<div class="office-ref-only">(text unavailable)</div>`;
+  const label = name === lesson.reference ? esc(name) : `${esc(name)}: ${esc(lesson.reference)}`;
   return `${headerHtml ?? ""}
-        <div class="office-lesson-label">${esc(name)}: ${esc(lesson.reference)}</div>
+        <div class="office-lesson-label">${label}</div>
         ${textBlock}`;
 }
 
@@ -206,12 +205,14 @@ function renderOfficePage(office: DailyOfficeData): string {
   const subtitle = office.title
     ? `${office.title} \u00b7 ${office.day}`
     : `${office.week} \u00b7 ${office.day}`;
-  const psalmText = office.study.psalms.length > 0 ? office.study.psalms.join(", ") : "None";
-  const studyHeader = `<div class="office-section-title">Study</div>
-        <div class="office-psalms">Psalms: ${esc(psalmText)}</div>`;
-  const lessons = office.study.lessons
-    .map((lesson, index) => renderOfficeLesson(`Lesson ${index + 1}`, lesson, index === 0 ? studyHeader : undefined))
+  const studyHeader = `<div class="office-section-title">Study</div>`;
+  const psalmHtml = office.study.psalms
+    .map((p) => renderOfficeLesson(p.reference, p))
     .join("");
+  const lessonHtml = office.study.lessons
+    .map((lesson, index) => renderOfficeLesson(`Lesson ${index + 1}`, lesson))
+    .join("");
+  const lessons = studyHeader + psalmHtml + lessonHtml;
   return `
   <div class="office-page">
     <div class="office-columns">
@@ -360,9 +361,9 @@ export function renderHtml(data: TemplateData): string {
     }
 
     :root {
-      --box-border-width: 1.5px;
-      --box-border-color: #666;
-      --box-border-radius: 3px;
+      --box-border-width: 0;
+      --box-border-color: transparent;
+      --box-border-radius: 0;
     }
 
     html, body { margin: 0; padding: 0; }
@@ -397,12 +398,8 @@ export function renderHtml(data: TemplateData): string {
 
     /* ── Panels ────────────────────────────────────────────────────── */
     .panel {
-      border-style: solid;
-      border-width: var(--box-border-width);
-      border-color: var(--box-border-color);
-      border-radius: var(--box-border-radius);
       box-sizing: border-box;
-      padding: 0.5em 0.7em;
+      padding: 0.5em 0;
       break-inside: avoid;
     }
 
@@ -455,15 +452,13 @@ export function renderHtml(data: TemplateData): string {
       display: inline-block;
       font-size: 9pt;
       color: #333;
-      border: 1px solid #888;
-      border-radius: 2px;
       padding: 0 0.3em;
       margin-left: 0.4em;
       vertical-align: middle;
       line-height: 1.4;
     }
-    .due-badge.overdue { font-weight: 700; border-color: #000; color: #000; }
-    .due-badge.today { font-weight: 600; border-style: dashed; }
+    .due-badge.overdue { font-weight: 700; color: #000; }
+    .due-badge.today { font-weight: 600; }
     .due-badge.soon { font-style: italic; }
     /* ── Weather ───────────────────────────────────────────────────── */
     

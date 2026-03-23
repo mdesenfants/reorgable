@@ -20,7 +20,7 @@ export interface DailyOfficeData {
   day: string;
   title?: string;
   study: {
-    psalms: string[];
+    psalms: DailyOfficeLesson[];
     lessons: DailyOfficeLesson[];
   };
   morning: DailyOfficeSection;
@@ -365,12 +365,23 @@ export async function fetchDailyOffice(
     buildSection(kv, entry.psalms.evening, eveningLessons),
   ]);
 
+  const merged = mergeDeduplicatedStudy(morning, evening);
+
+  // Fetch psalm text in parallel
+  const psalmLessons: DailyOfficeLesson[] = await Promise.all(
+    merged.psalms.map(async (num) => {
+      const reference = `Psalm ${num}`;
+      const text = await fetchScriptureText(kv, reference);
+      return { reference, text };
+    })
+  );
+
   return {
     season: entry.season,
     week: entry.week,
     day: entry.day,
     title: entry.title,
-    study: mergeDeduplicatedStudy(morning, evening),
+    study: { psalms: psalmLessons, lessons: merged.lessons },
     morning,
     evening,
   };
