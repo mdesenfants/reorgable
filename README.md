@@ -86,7 +86,7 @@ All of this accumulates in D1. Deduplication by `externalId` means repeated sync
 
 ### 5:00 AM Pacific — the report runs
 
-The report-worker has cron triggers at `12:00 UTC` and `13:00 UTC` (the second is a safety retry). A Pacific-time guard in code ensures it only fires at 5 AM local, handling DST automatically.
+The report-worker has cron triggers at `12:00 UTC` (5 AM PDT) and `13:00 UTC` (5 AM PST). A Pacific-time guard in code ensures only the trigger that lands on 5 AM local actually runs, handling DST automatically.
 
 Here's what happens:
 
@@ -558,8 +558,8 @@ npm run preview
 
 ## Schedule and timing notes
 
-- Cron triggers fire at `12:00 UTC` and `13:00 UTC` daily. Both windows are checked; the second is a safety retry.
-- The report worker enforces a Pacific-time 5:00 AM earliest-start guard in code to handle DST without updating cron strings.
+- Cron triggers fire at `12:00 UTC` (5 AM PDT) and `13:00 UTC` (5 AM PST) daily. Only one runs — the `shouldRunNow()` guard checks Pacific hour === 5 and skips the off-season trigger.
+- This dual-cron approach means no manual cron changes are needed for DST transitions.
 - If no items were ingested since the last run, the worker skips generation unless `force=true`.
 
 ## reMarkable upload notes
