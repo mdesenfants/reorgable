@@ -11,6 +11,7 @@ type Env = {
   BROWSER: BrowserWorker;
   GEMINI_API_KEY: string;
   GEMINI_MODEL?: string;
+  NEWS_API?: string;
   REMARKABLE_IMPORT_URL?: string;
   REMARKABLE_DEVICE_TOKEN?: string;
   REMARKABLE_SESSION_TOKEN?: string;
@@ -60,11 +61,12 @@ type CalendarEvent = {
 
 
 
-type WeatherSnapshot = {
-  highF: number;
-  lowF: number;
-  weatherCode: number;
-  hourly: Array<{ hour: number; tempF: number; weatherCode: number }>;
+import type { WeatherSnapshot } from "@reorgable/shared";
+
+type NewsHeadline = {
+  title: string;
+  source?: string;
+  publishedAt?: string;
 };
 
 const WEATHER_LABELS: Partial<Record<number, string>> = {
@@ -190,6 +192,42 @@ async function fetchWeather(): Promise<WeatherSnapshot> {
     weatherCode: body.current?.weather_code ?? -1,
     hourly,
   };
+}
+
+async function fetchTopHeadlines(apiKey?: string): Promise<NewsHeadline[]> {
+  if (!apiKey) return [];
+
+  try {
+    const response = await fetch(
+      "https://newsapi.org/v2/top-headlines?country=us&pageSize=5",
+      {
+        headers: {
+          "X-Api-Key": apiKey,
+        },
+      }
+    );
+
+    if (!response.ok) return [];
+
+    const body = (await response.json()) as {
+      articles?: Array<{
+        title?: string;
+        source?: { name?: string };
+        publishedAt?: string;
+      }>;
+    };
+
+    return (body.articles ?? [])
+      .map((article) => ({
+        title: article.title ?? "",
+        source: article.source?.name,
+        publishedAt: article.publishedAt,
+      }))
+      .filter((article) => article.title.trim().length > 0)
+      .slice(0, 5);
+  } catch {
+    return [];
+  }
 }
 
 async function getItemsSinceCursor(env: Env, cursor: string): Promise<IngestedItem[]> {
@@ -541,7 +579,7 @@ function describeWeather(weather: WeatherSnapshot): string {
   return `high ${weather.highF.toFixed(0)}F, low ${weather.lowF.toFixed(0)}F, ${label}`;
 }
 
-function buildGeminiPrompt(items: IngestedItem[], weather: WeatherSnapshot, dateLabel: string, previousOverview?: string, conflicts?: CalendarConflict[], engagement?: EngagementSummary, operatorContext?: string): string {
+function buildGeminiPrompt(items: IngestedItem[], weather: WeatherSnapshot, dateLabel: string, previousOverview?: string, conflicts?: CalendarConflict[], engagement?: EngagementSummary, operatorContext?: string, headlines?: NewsHeadline[]): string {
   const compact = items.map((item) => {
     const meta = safeParseMetadata(item);
     // Convert calendar timestamps to Pacific for the LLM
@@ -580,6 +618,8 @@ function buildGeminiPrompt(items: IngestedItem[], weather: WeatherSnapshot, date
     "- use the full content of emails and calendar events to understand what tasks entail",
     "- focus on key dependencies and communication risk",
     "- all times shown are already in Pacific Time",
+    "- overview: if top headlines are provided below, include a brief 'In the News' closing sentence summarizing the key stories.",
+    "- overview: the user is especially interested in major US news, international news, science, technology, business, and Seattle sports (Seahawks, Mariners, Kraken, Sounders, Storm) — prioritize those topics when selecting which headlines to highlight.",
   ];
 
   if (operatorContext) {
@@ -607,6 +647,17 @@ function buildGeminiPrompt(items: IngestedItem[], weather: WeatherSnapshot, date
     }
   }
 
+  if (headlines?.length) {
+    lines.push(
+      "",
+      "Top headlines (MUST include a 1–2 sentence 'In the News' summary of these in the overview):"
+    );
+    for (const headline of headlines) {
+      const source = headline.source ? ` (${headline.source})` : "";
+      lines.push(`- ${headline.title}${source}`);
+    }
+  }
+
   lines.push("", "Input items:", JSON.stringify(compact));
 
   return lines.join("\n");
@@ -629,14 +680,15 @@ async function summarizeWithGemini(
   previousOverview?: string,
   conflicts?: CalendarConflict[],
   engagement?: EngagementSummary,
-  operatorContext?: string
+  operatorContext?: string,
+  headlines?: NewsHeadline[]
 ): Promise<ReportOutput> {
   if (!env.GEMINI_API_KEY) {
     throw new Error("Missing GEMINI_API_KEY");
   }
 
   const model = env.GEMINI_MODEL ?? "gemini-3-flash-preview";
-  const prompt = buildGeminiPrompt(items, weather, dateLabel, previousOverview, conflicts, engagement, operatorContext);
+  const prompt = buildGeminiPrompt(items, weather, dateLabel, previousOverview, conflicts, engagement, operatorContext, headlines);
 
   const response = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${env.GEMINI_API_KEY}`,
@@ -878,7 +930,11 @@ async function runDailyReport(env: Env, opts?: { force?: boolean; lookbackHours?
   const dateLabel = formatDatePacific(now);
   const fileName = buildFileName(now);
 
-  const [{ items, cursor }, weather] = await Promise.all([getItemsSinceLastRun(env, cursorOverride), fetchWeather()]);
+  const [{ items, cursor }, weather, headlines] = await Promise.all([
+    getItemsSinceLastRun(env, cursorOverride),
+    fetchWeather(),
+    fetchTopHeadlines(env.NEWS_API),
+  ]);
   const filteredItems = filterItemsForBrief(items);
 
   // Skip report if there's nothing meaningful to include
@@ -902,7 +958,17 @@ async function runDailyReport(env: Env, opts?: { force?: boolean; lookbackHours?
   const todos = buildGoogleTaskTodos(filteredItems);
   const noteLines = buildNoteLines(filteredItems);
 
-  const llmSummary = await summarizeWithGemini(env, filteredItems, weather, dateLabel, previousOverview, conflicts, previousEngagement, operatorContext ?? undefined);
+  const llmSummary = await summarizeWithGemini(
+    env,
+    filteredItems,
+    weather,
+    dateLabel,
+    previousOverview,
+    conflicts,
+    previousEngagement,
+    operatorContext ?? undefined,
+    headlines
+  );
 
   const referenceItems = buildReferenceItems(items);
   const refFileName = fileName.replace(".pdf", "-ref.pdf");

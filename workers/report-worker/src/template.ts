@@ -3,15 +3,11 @@
 // by the Cloudflare Worker via @cloudflare/puppeteer (Browser Rendering).
 
 import type { DailyOfficeData, DailyOfficeLesson } from "./daily-office";
+import type { WeatherSnapshot } from "@reorgable/shared";
 
 export interface TemplateData {
   dateLabel: string;
-  weather: {
-    highF: number;
-    lowF: number;
-    weatherCode: number;
-    hourly: Array<{ hour: number; tempF: number; weatherCode: number }>;
-  };
+  weather: WeatherSnapshot;
   overview: string;
   deltaSinceYesterday: string;
   agendaEvents: Array<{
@@ -196,15 +192,14 @@ export function renderReferenceHtml(data: ReferenceTemplateData): string {
 </html>`;
 }
 
-function renderOfficeLesson(name: string, lesson?: DailyOfficeLesson): string {
+function renderOfficeLesson(name: string, lesson?: DailyOfficeLesson, headerHtml?: string): string {
   if (!lesson) return "";
   const textBlock = lesson.text
     ? `<div class="office-text">${esc(lesson.text)}</div>`
     : `<div class="office-ref-only">(text unavailable)</div>`;
-  return `<div class="office-lesson">
+  return `${headerHtml ?? ""}
         <div class="office-lesson-label">${esc(name)}: ${esc(lesson.reference)}</div>
-        ${textBlock}
-      </div>`;
+        ${textBlock}`;
 }
 
 function renderOfficePage(office: DailyOfficeData): string {
@@ -212,21 +207,21 @@ function renderOfficePage(office: DailyOfficeData): string {
     ? `${office.title} \u00b7 ${office.day}`
     : `${office.week} \u00b7 ${office.day}`;
   const psalmText = office.study.psalms.length > 0 ? office.study.psalms.join(", ") : "None";
+  const studyHeader = `<div class="office-section-title">Study</div>
+        <div class="office-psalms">Psalms: ${esc(psalmText)}</div>`;
   const lessons = office.study.lessons
-    .map((lesson, index) => renderOfficeLesson(`Lesson ${index + 1}`, lesson))
+    .map((lesson, index) => renderOfficeLesson(`Lesson ${index + 1}`, lesson, index === 0 ? studyHeader : undefined))
     .join("");
   return `
   <div class="office-page">
-    <div class="office-title">Daily Office</div>
-    <div class="office-subtitle">${esc(subtitle)}</div>
-    <div class="office-season">${esc(office.season)}</div>
-    <hr class="divider">
     <div class="office-columns">
-      <div class="office-section">
-        <div class="office-section-title">Study</div>
-        <div class="office-psalms">Psalms: ${esc(psalmText)}</div>
-        ${lessons}
+      <div class="office-header">
+        <div class="office-title">Daily Office</div>
+        <div class="office-subtitle">${esc(subtitle)}</div>
+        <div class="office-season">${esc(office.season)}</div>
+        <hr class="divider">
       </div>
+      ${lessons}
     </div>
   </div>`;
 }
@@ -533,11 +528,13 @@ export function renderHtml(data: TemplateData): string {
 
     /* ── Daily Office page ─────────────────────────────────────────── */
     .office-page { break-before: page; }
+    .office-header { column-span: all; margin-bottom: 0.3em; }
     .office-title { font-size: 20pt; font-weight: 700; margin: 0 0 0.15em; }
     .office-subtitle { font-size: 14pt; color: #222; margin: 0 0 0.1em; }
     .office-season { font-size: 12pt; color: #333; font-style: italic; margin: 0 0 0.15em; }
     .office-columns {
-      display: block;
+      columns: 2;
+      column-gap: 1.5em;
     }
     .office-section { margin-bottom: 0.4em; break-inside: auto; }
     .office-section-title {
@@ -546,51 +543,21 @@ export function renderHtml(data: TemplateData): string {
       break-after: avoid;
     }
     .office-psalms { font-size: 10pt; color: #333; margin: 0 0 0.15em; }
-    .office-lesson {
-      margin-bottom: 0.25em;
-      break-inside: auto;
-      position: relative;
-      background: #fff;
-      padding: 0.05em 0;
-    }
-    .office-lesson::after {
-      content: "";
-      position: absolute;
-      top: 0;
-      right: 0;
-      bottom: 0;
-      width: 50%;
-      background: #ededed;
-      pointer-events: none;
-      z-index: 0;
-    }
     .office-lesson-label {
       font-size: 11pt;
       font-weight: 600;
-      margin: 0 0 0.05em;
+      margin: 0.4em 0 0.05em;
       break-after: avoid;
-      position: relative;
-      z-index: 1;
     }
     .office-text {
       font-size: 9.5pt;
       line-height: 1.45;
       white-space: pre-line;
-      width: 50%;
-      padding-right: 0.5em;
-      box-sizing: border-box;
-      position: relative;
-      z-index: 1;
     }
     .office-ref-only {
       font-size: 9.5pt;
       color: #444;
       font-style: italic;
-      width: 50%;
-      padding-right: 0.5em;
-      box-sizing: border-box;
-      position: relative;
-      z-index: 1;
     }
 
     /* ── Day calendar page ─────────────────────────────────────────── */

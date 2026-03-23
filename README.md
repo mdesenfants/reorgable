@@ -98,18 +98,21 @@ Here's what happens:
   - To-do checklist (open tasks from Google Tasks / Microsoft To Do, with completed child tasks hidden)
    - Notes (quick captures from the note endpoint)
 4. **Fetch context** — pull yesterday's overview from the last `report_runs` row
-5. **Call Gemini** — send the full item list, weather forecast, yesterday's context, and any calendar conflicts to the LLM with a structured JSON schema. Gemini returns:
-  - A 2–5 sentence executive overview (first sentence includes daily weather high/low and condition)
+5. **Fetch top headlines** — pull the top 5 US headlines from NewsAPI, prioritizing stories about science, technology, business, international affairs, and Seattle sports
+6. **Fetch Daily Office readings** — resolve today's liturgical position in the Anglican lectionary, fetch morning and evening readings from bible-api.com, and merge/deduplicate the study set
+7. **Call Gemini** — send the full item list, weather forecast, yesterday's context, headlines, and any calendar conflicts to the LLM with a structured JSON schema. Gemini returns:
+  - A 2–5 sentence executive overview (first sentence includes daily weather high/low and condition; closing sentence summarizes notable headlines)
    - A delta summary (what changed since yesterday)
-6. **Render the PDF** — Puppeteer prints a multi-page Letter-format document:
+8. **Render the PDF** — Puppeteer prints a multi-page Letter-format document:
   - **Page 1+**: header with weather high/low, overview, delta text, day agenda, to-do checklist with checkboxes
    - **Day View page**: a visual 6 AM–9 PM calendar with event blocks and hourly weather
+   - **Daily Office page**: lectionary readings in a two-column layout, with Study heading, psalms, and lesson texts that flow across columns
    - **Notes page**: any captured notes plus ruled lines for handwriting
-7. **Render a reference appendix** — if there are emails or notes with longer bodies, a second PDF is generated with the full text of each item
-8. **Store in R2** — both PDFs are saved to the reports bucket
-9. **Upload to reMarkable** — the main brief and (if present) the reference doc are uploaded together to the `/Daily Briefings` folder on the tablet
-10. **Archive yesterday's brief** — the previous day's PDF is re-uploaded to `/Briefs` for history, then marked so it won't be archived again
-11. **Record the run** — D1 gets a `report_runs` row with the summary JSON, upload status, and reMarkable document ID; a `brief_engagement` row tracks the uploaded doc
+9. **Render a reference appendix** — if there are emails or notes with longer bodies, a second PDF is generated with the full text of each item
+10. **Store in R2** — both PDFs are saved to the reports bucket
+11. **Upload to reMarkable** — the main brief and (if present) the reference doc are uploaded together to the `/Daily Briefings` folder on the tablet
+12. **Archive yesterday's brief** — the previous day's PDF is re-uploaded to `/Briefs` for history, then marked so it won't be archived again
+13. **Record the run** — D1 gets a `report_runs` row with the summary JSON, upload status, and reMarkable document ID; a `brief_engagement` row tracks the uploaded doc
 
 ### 5:01 AM — it's on your tablet
 
@@ -118,7 +121,7 @@ Pick up your reMarkable. The daily brief is in `/Daily Briefings`. You get:
 - A quick-scan overview of the day ahead
 - A visual timeline showing where your meetings fall (and if any overlap)
 - A checkbox list of open tasks you can tick off with the pen
-- Follow-up items that carried over from yesterday
+- Daily Office lectionary readings in a two-column layout
 - A notes page for meeting scribbles
 
 The reference appendix sits alongside it if you need the full text of an email thread or a longer note.
@@ -174,6 +177,7 @@ workers/
 - [Wrangler CLI](https://developers.cloudflare.com/workers/wrangler/) v4+ (`npm install -g wrangler`)
 - A Cloudflare account with Workers, D1, R2, KV, and Browser Rendering enabled
 - A [Google AI Studio](https://aistudio.google.com/) API key for Gemini
+- A [NewsAPI](https://newsapi.org/) key (free tier) for daily headlines (optional — overview still generates without one)
 - A reMarkable tablet (optional — reports still generate without one)
 
 ### 1. Clone and install
@@ -256,7 +260,10 @@ printf "%s" "<your-gemini-api-key>" | wrangler secret put GEMINI_API_KEY \
 # Optional — override the default model (gemini-3-flash-preview)
 printf "%s" "gemini-3-flash-preview" | wrangler secret put GEMINI_MODEL \
   --config workers/report-worker/wrangler.toml
+printf "%s" "<newsapi-key>"              | wrangler secret put NEWS_API       -c workers/report-worker/wrangler.toml
 ```
+
+`NEWS_API` is optional. If present, the report worker fetches top US headlines from newsapi.org and supplies them as optional context to the LLM summary.
 
 ### 6. Set up Microsoft Graph sync (optional)
 

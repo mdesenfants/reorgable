@@ -45,6 +45,7 @@ const KV_NAMESPACE_ID = process.env.CLOUDFLARE_KV_NAMESPACE_ID ?? "aff13c4ce8b04
 const PACIFIC_TIMEZONE = "America/Los_Angeles";
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_MODEL = process.env.GEMINI_MODEL ?? "gemini-3-flash-preview";
+const NEWS_API = process.env.NEWS_API;
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -126,11 +127,12 @@ type ItemMetadata = {
   dueAt?: string;
 };
 
-type WeatherSnapshot = {
-  highF: number;
-  lowF: number;
-  weatherCode: number;
-  hourly: Array<{ hour: number; tempF: number; weatherCode: number }>;
+import type { WeatherSnapshot } from "@reorgable/shared";
+
+type NewsHeadline = {
+  title: string;
+  source?: string;
+  publishedAt?: string;
 };
 
 type CalendarEvent = {
@@ -304,6 +306,25 @@ async function fetchWeather(): Promise<WeatherSnapshot> {
   return { highF, lowF, weatherCode: body.current?.weather_code ?? -1, hourly };
 }
 
+async function fetchTopHeadlines(apiKey?: string): Promise<NewsHeadline[]> {
+  if (!apiKey) return [];
+  try {
+    const res = await fetch("https://newsapi.org/v2/top-headlines?country=us&pageSize=5", {
+      headers: { "X-Api-Key": apiKey },
+    });
+    if (!res.ok) return [];
+    const body = await res.json() as {
+      articles?: Array<{ title?: string; source?: { name?: string }; publishedAt?: string }>;
+    };
+    return (body.articles ?? [])
+      .map((a) => ({ title: a.title ?? "", source: a.source?.name, publishedAt: a.publishedAt }))
+      .filter((a) => a.title.trim().length > 0)
+      .slice(0, 5);
+  } catch {
+    return [];
+  }
+}
+
 function getPreviousOverview(): string | undefined {
   const rows = d1Query<{ summary_json: string }>("SELECT summary_json FROM report_runs ORDER BY run_at DESC LIMIT 1");
   if (!rows[0]?.summary_json) return undefined;
@@ -333,6 +354,7 @@ function buildGeminiPrompt(
   previousOverview?: string,
   conflicts?: CalendarConflict[], engagement?: EngagementSummary,
   operatorContext?: string,
+  headlines?: NewsHeadline[],
 ): string {
   const compact = items.map(item => {
     const meta = safeParseMetadata(item);
@@ -354,6 +376,8 @@ function buildGeminiPrompt(
     "- use the full content of emails and calendar events",
     "- focus on key dependencies and communication risk",
     "- all times shown are already in Pacific Time",
+    "- overview: if top headlines are provided below, include a brief 'In the News' closing sentence summarizing the key stories",
+    "- overview: the user is especially interested in major US news, international news, science, technology, business, and Seattle sports (Seahawks, Mariners, Kraken, Sounders, Storm) — prioritize those topics when selecting which headlines to highlight.",
   ];
   if (operatorContext) lines.push("", "Operator guidance:", operatorContext);
   if (previousOverview) lines.push("", "Yesterday's overview:", previousOverview);
@@ -362,6 +386,10 @@ function buildGeminiPrompt(
     const s = engagement.stillOnDevice ? `still on device (${engagement.retentionHours ?? "?"}h)` : `removed after ${engagement.retentionHours ?? "?"}h`;
     lines.push("", `📊 Previous brief: "${engagement.briefName}" ${s}.`);
     if (!engagement.stillOnDevice && engagement.retentionHours !== undefined && engagement.retentionHours < 1) lines.push("  Deleted quickly — be more concise.");
+  }
+  if (headlines?.length) {
+    lines.push("", "Top headlines (MUST include a 1\u20132 sentence 'In the News' summary of these in the overview):");
+    for (const h of headlines) lines.push(`- ${h.title}${h.source ? ` (${h.source})` : ""}`);
   }
   lines.push("", "Input items:", JSON.stringify(compact));
   return lines.join("\n");
@@ -378,9 +406,10 @@ async function summarizeWithGemini(
   previousOverview?: string,
   conflicts?: CalendarConflict[], engagement?: EngagementSummary,
   operatorContext?: string,
+  headlines?: NewsHeadline[],
 ) {
   if (!GEMINI_API_KEY) throw new Error("Missing GEMINI_API_KEY env var");
-  const prompt = buildGeminiPrompt(items, weather, dateLabel, previousOverview, conflicts, engagement, operatorContext);
+  const prompt = buildGeminiPrompt(items, weather, dateLabel, previousOverview, conflicts, engagement, operatorContext, headlines);
 
   console.log("  Calling Gemini...");
   const res = await fetch(
@@ -432,15 +461,17 @@ async function main(): Promise<void> {
   const pp = getPacificParts(now);
   const pacificDate = new Date(pp.year, pp.month - 1, pp.day);
 
-  const [weather, dailyOffice] = await Promise.all([
+  const [weather, dailyOffice, headlines] = await Promise.all([
     fetchWeather(),
     fetchDailyOffice(makeNullKV(), pacificDate).catch(() => undefined),
+    fetchTopHeadlines(NEWS_API),
   ]);
   const previousOverview = getPreviousOverview();
   const previousEngagement = getPreviousEngagement();
   const operatorContext = kvGet("operator_context");
 
   console.log(`  Weather: H ${weather.highF.toFixed(0)}° / L ${weather.lowF.toFixed(0)}°, code ${weather.weatherCode}`);
+  console.log(`  Headlines: ${headlines.length}`);
   console.log(`  Daily Office: ${dailyOffice ? `${dailyOffice.season} ${dailyOffice.week} ${dailyOffice.day}` : "unavailable"}`);
 
   // 3. Build structured data
@@ -455,7 +486,7 @@ async function main(): Promise<void> {
   const llm = await summarizeWithGemini(
     filtered, weather, dateLabel,
     previousOverview, conflicts,
-    previousEngagement, operatorContext ?? undefined,
+    previousEngagement, operatorContext ?? undefined, headlines,
   );
 
   // 5. Render HTML
