@@ -554,7 +554,7 @@ export function renderHtml(data: TemplateData): string {
       left: 0;
       right: 0;
       display: grid;
-      grid-template-columns: 84px 1fr;
+      grid-template-columns: 48px 1fr;
       align-items: center;
     }
     .calendar-row-label {
@@ -572,7 +572,7 @@ export function renderHtml(data: TemplateData): string {
       position: absolute;
       top: 0;
       bottom: 0;
-      left: 88px;
+      left: 52px;
       right: 0;
     }
     .calendar-event {
