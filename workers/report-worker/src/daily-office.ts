@@ -19,8 +19,52 @@ export interface DailyOfficeData {
   week: string;
   day: string;
   title?: string;
+  study: {
+    psalms: DailyOfficeLesson[];
+    lessons: DailyOfficeLesson[];
+  };
   morning: DailyOfficeSection;
   evening: DailyOfficeSection;
+}
+
+function normalizeLessonReference(reference: string): string {
+  return reference
+    .toLowerCase()
+    .replace(/[\u2013\u2014]/g, "-")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function mergeDeduplicatedStudy(morning: DailyOfficeSection, evening: DailyOfficeSection): { psalms: string[]; lessons: DailyOfficeLesson[] } {
+  const psalmSeen = new Set<string>();
+  const psalms: string[] = [];
+  for (const psalm of [...morning.psalms, ...evening.psalms]) {
+    const key = psalm.trim();
+    if (!key || psalmSeen.has(key)) continue;
+    psalmSeen.add(key);
+    psalms.push(key);
+  }
+
+  const lessons: DailyOfficeLesson[] = [];
+  const lessonSeen = new Set<string>();
+  const orderedLessons = [
+    morning.first,
+    morning.second,
+    morning.gospel,
+    evening.first,
+    evening.second,
+    evening.gospel,
+  ];
+
+  for (const lesson of orderedLessons) {
+    if (!lesson?.reference) continue;
+    const key = normalizeLessonReference(lesson.reference);
+    if (lessonSeen.has(key)) continue;
+    lessonSeen.add(key);
+    lessons.push(lesson);
+  }
+
+  return { psalms, lessons };
 }
 
 // ── Liturgical Calendar ──────────────────────────────────────────────
@@ -321,11 +365,23 @@ export async function fetchDailyOffice(
     buildSection(kv, entry.psalms.evening, eveningLessons),
   ]);
 
+  const merged = mergeDeduplicatedStudy(morning, evening);
+
+  // Fetch psalm text in parallel
+  const psalmLessons: DailyOfficeLesson[] = await Promise.all(
+    merged.psalms.map(async (num) => {
+      const reference = `Psalm ${num}`;
+      const text = await fetchScriptureText(kv, reference);
+      return { reference, text };
+    })
+  );
+
   return {
     season: entry.season,
     week: entry.week,
     day: entry.day,
     title: entry.title,
+    study: { psalms: psalmLessons, lessons: merged.lessons },
     morning,
     evening,
   };

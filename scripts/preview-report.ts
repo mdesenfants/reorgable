@@ -20,11 +20,10 @@ import { renderHtml, type TemplateData } from "../workers/report-worker/src/temp
 
 interface Fixture {
   dateLabel: string;
-  weather: { tempF: number; weatherCode: number; hourly: Array<{ hour: number; tempF: number; weatherCode: number }> };
+  weather: { highF: number; lowF: number; weatherCode: number; hourly: Array<{ hour: number; tempF: number; weatherCode: number }> };
   report: {
     overview: string;
     deltaSinceYesterday: string;
-    followUps: string[];
     agendaEvents: Array<{
       title: string;
       startAt: string;
@@ -52,7 +51,6 @@ async function main(): Promise<void> {
     weather: fixture.weather,
     overview: fixture.report.overview,
     deltaSinceYesterday: fixture.report.deltaSinceYesterday,
-    followUps: fixture.report.followUps,
     agendaEvents: fixture.report.agendaEvents,
     todos: fixture.report.todos,
     noteLines: fixture.report.noteLines,

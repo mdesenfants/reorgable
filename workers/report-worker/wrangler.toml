@@ -4,6 +4,8 @@ compatibility_date = "2025-12-01"
 compatibility_flags = ["nodejs_compat"]
 
 [triggers]
+# 12:00 UTC = 5am PDT, 13:00 UTC = 5am PST — covers both DST offsets.
+# The shouldRunNow() guard in code ensures only the 5am-Pacific window runs.
 crons = ["0 12 * * *", "0 13 * * *"]
 
 [[d1_databases]]

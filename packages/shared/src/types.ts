@@ -70,3 +70,10 @@ export type EmailIngest = z.infer<typeof emailIngestSchema>;
 export type NoteIngest = z.infer<typeof noteIngestSchema>;
 export type CalendarIngest = z.infer<typeof calendarIngestSchema>;
 export type StoredItemPayload = z.infer<typeof storedItemPayloadSchema>;
+
+export type WeatherSnapshot = {
+  highF: number;
+  lowF: number;
+  weatherCode: number;
+  hourly: Array<{ hour: number; tempF: number; weatherCode: number }>;
+};

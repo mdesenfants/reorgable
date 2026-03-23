@@ -30,13 +30,22 @@ import { renderHtml, type TemplateData } from "../workers/report-worker/src/temp
 import { fetchDailyOffice, type DailyOfficeData } from "../workers/report-worker/src/daily-office.js";
 import { reportOutputSchema, reportOutputJsonSchema } from "../packages/shared/src/report-schema.js";
 
+type PreviewKVNamespace = {
+  get: (key: string) => Promise<string | null>;
+  put: (key: string, value: string, options?: unknown) => Promise<void>;
+  delete: (key: string) => Promise<void>;
+  list: () => Promise<{ keys: unknown[]; list_complete: boolean }>;
+  getWithMetadata: (key: string) => Promise<{ value: string | null; metadata: unknown; cacheStatus: unknown }>;
+};
+
 // ── Config ──────────────────────────────────────────────────────────
 
 const D1_DB_NAME = "daily_brief";
-const KV_NAMESPACE_ID = "aff13c4ce8b049fc8869a526fb392c85";
+const KV_NAMESPACE_ID = process.env.CLOUDFLARE_KV_NAMESPACE_ID ?? "aff13c4ce8b049fc8869a526fb392c85";
 const PACIFIC_TIMEZONE = "America/Los_Angeles";
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_MODEL = process.env.GEMINI_MODEL ?? "gemini-3-flash-preview";
+const NEWS_API = process.env.NEWS_API;
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -79,14 +88,14 @@ function kvGet(key: string): string | null {
 
 // ── Fake KVNamespace for daily-office (no caching, just pass-through) ──
 
-function makeNullKV(): KVNamespace {
+function makeNullKV(): PreviewKVNamespace {
   return {
     get: async () => null,
     put: async () => {},
     delete: async () => {},
     list: async () => ({ keys: [], list_complete: true }),
     getWithMetadata: async () => ({ value: null, metadata: null, cacheStatus: null }),
-  } as unknown as KVNamespace;
+  };
 }
 
 // ── Types (mirrored from worker) ────────────────────────────────────
@@ -105,6 +114,9 @@ type ItemMetadata = {
   isUnread?: boolean;
   inInbox?: boolean;
   tags?: string[];
+  relatedEmailSubject?: string;
+  relatedEmailFrom?: string;
+  relatedEmailMessageId?: string;
   from?: string;
   to?: string;
   startAt?: string;
@@ -115,10 +127,12 @@ type ItemMetadata = {
   dueAt?: string;
 };
 
-type WeatherSnapshot = {
-  tempF: number;
-  weatherCode: number;
-  hourly: Array<{ hour: number; tempF: number; weatherCode: number }>;
+import type { WeatherSnapshot } from "@reorgable/shared";
+
+type NewsHeadline = {
+  title: string;
+  source?: string;
+  publishedAt?: string;
 };
 
 type CalendarEvent = {
@@ -286,19 +300,35 @@ async function fetchWeather(): Promise<WeatherSnapshot> {
   const hourly: WeatherSnapshot["hourly"] = [];
   const times = body.hourly?.time ?? [], temps = body.hourly?.temperature_2m ?? [], codes = body.hourly?.weather_code ?? [];
   for (let i = 0; i < times.length; i++) { const h = parseInt(times[i].split("T")[1].split(":")[0], 10); if (h >= 6 && h <= 21) hourly.push({ hour: h, tempF: temps[i] ?? 0, weatherCode: codes[i] ?? -1 }); }
-  return { tempF: body.current?.temperature_2m ?? 0, weatherCode: body.current?.weather_code ?? -1, hourly };
+  const forecastTemps = temps.filter((temp) => typeof temp === "number");
+  const highF = forecastTemps.length ? Math.max(...forecastTemps) : body.current?.temperature_2m ?? 0;
+  const lowF = forecastTemps.length ? Math.min(...forecastTemps) : body.current?.temperature_2m ?? 0;
+  return { highF, lowF, weatherCode: body.current?.weather_code ?? -1, hourly };
+}
+
+async function fetchTopHeadlines(apiKey?: string): Promise<NewsHeadline[]> {
+  if (!apiKey) return [];
+  try {
+    const res = await fetch("https://newsapi.org/v2/top-headlines?country=us&pageSize=5", {
+      headers: { "X-Api-Key": apiKey },
+    });
+    if (!res.ok) return [];
+    const body = await res.json() as {
+      articles?: Array<{ title?: string; source?: { name?: string }; publishedAt?: string }>;
+    };
+    return (body.articles ?? [])
+      .map((a) => ({ title: a.title ?? "", source: a.source?.name, publishedAt: a.publishedAt }))
+      .filter((a) => a.title.trim().length > 0)
+      .slice(0, 5);
+  } catch {
+    return [];
+  }
 }
 
 function getPreviousOverview(): string | undefined {
   const rows = d1Query<{ summary_json: string }>("SELECT summary_json FROM report_runs ORDER BY run_at DESC LIMIT 1");
   if (!rows[0]?.summary_json) return undefined;
   try { return (JSON.parse(rows[0].summary_json) as { overview?: string }).overview || undefined; } catch { return undefined; }
-}
-
-function getPreviousFollowUps(): string[] | undefined {
-  const rows = d1Query<{ summary_json: string }>("SELECT summary_json FROM report_runs ORDER BY run_at DESC LIMIT 1");
-  if (!rows[0]?.summary_json) return undefined;
-  try { const p = JSON.parse(rows[0].summary_json) as { followUps?: string[] }; return p.followUps?.length ? p.followUps : undefined; } catch { return undefined; }
 }
 
 function getPreviousEngagement(): EngagementSummary | undefined {
@@ -321,9 +351,10 @@ function getPreviousEngagement(): EngagementSummary | undefined {
 
 function buildGeminiPrompt(
   items: IngestedItem[], weather: WeatherSnapshot, dateLabel: string,
-  previousOverview?: string, previousFollowUps?: string[],
+  previousOverview?: string,
   conflicts?: CalendarConflict[], engagement?: EngagementSummary,
   operatorContext?: string,
+  headlines?: NewsHeadline[],
 ): string {
   const compact = items.map(item => {
     const meta = safeParseMetadata(item);
@@ -336,24 +367,29 @@ function buildGeminiPrompt(
   const lines = [
     "You are generating a fixed-format daily brief.",
     `Date: ${dateLabel}`, `Timezone: Pacific Time (America/Los_Angeles)`,
-    `Weather: ${weather.tempF}F code ${weather.weatherCode}`,
+    `Weather: high ${weather.highF.toFixed(0)}F, low ${weather.lowF.toFixed(0)}F, code ${weather.weatherCode}`,
     "Return JSON matching the schema exactly.",
     "Guidance:",
     "- overview: concise executive summary covering key meetings, tasks, and priorities",
+    "- overview: first sentence must describe weather with daily high/low and condition",
     "- deltaSinceYesterday: summarize what changed since yesterday",
-    "- followUps: list specific calls, emails, messages, or actions to take today",
     "- use the full content of emails and calendar events",
     "- focus on key dependencies and communication risk",
     "- all times shown are already in Pacific Time",
+    "- overview: if top headlines are provided below, include a brief 'In the News' closing sentence summarizing the key stories",
+    "- overview: the user is especially interested in major US news, international news, science, technology, business, and Seattle sports (Seahawks, Mariners, Kraken, Sounders, Storm) — prioritize those topics when selecting which headlines to highlight.",
   ];
   if (operatorContext) lines.push("", "Operator guidance:", operatorContext);
   if (previousOverview) lines.push("", "Yesterday's overview:", previousOverview);
-  if (previousFollowUps?.length) { lines.push("", "Yesterday's follow-ups:"); for (const f of previousFollowUps) lines.push(`- ${f}`); }
   if (conflicts?.length) { lines.push("", "⚠ Calendar conflicts:"); for (const c of conflicts) lines.push(`- "${c.eventA}" and "${c.eventB}" overlap by ${c.overlapMinutes}min`); }
   if (engagement) {
     const s = engagement.stillOnDevice ? `still on device (${engagement.retentionHours ?? "?"}h)` : `removed after ${engagement.retentionHours ?? "?"}h`;
     lines.push("", `📊 Previous brief: "${engagement.briefName}" ${s}.`);
     if (!engagement.stillOnDevice && engagement.retentionHours !== undefined && engagement.retentionHours < 1) lines.push("  Deleted quickly — be more concise.");
+  }
+  if (headlines?.length) {
+    lines.push("", "Top headlines (MUST include a 1\u20132 sentence 'In the News' summary of these in the overview):");
+    for (const h of headlines) lines.push(`- ${h.title}${h.source ? ` (${h.source})` : ""}`);
   }
   lines.push("", "Input items:", JSON.stringify(compact));
   return lines.join("\n");
@@ -367,12 +403,13 @@ function extractJsonObject(text: string): string {
 
 async function summarizeWithGemini(
   items: IngestedItem[], weather: WeatherSnapshot, dateLabel: string,
-  previousOverview?: string, previousFollowUps?: string[],
+  previousOverview?: string,
   conflicts?: CalendarConflict[], engagement?: EngagementSummary,
   operatorContext?: string,
+  headlines?: NewsHeadline[],
 ) {
   if (!GEMINI_API_KEY) throw new Error("Missing GEMINI_API_KEY env var");
-  const prompt = buildGeminiPrompt(items, weather, dateLabel, previousOverview, previousFollowUps, conflicts, engagement, operatorContext);
+  const prompt = buildGeminiPrompt(items, weather, dateLabel, previousOverview, conflicts, engagement, operatorContext, headlines);
 
   console.log("  Calling Gemini...");
   const res = await fetch(
@@ -424,16 +461,17 @@ async function main(): Promise<void> {
   const pp = getPacificParts(now);
   const pacificDate = new Date(pp.year, pp.month - 1, pp.day);
 
-  const [weather, dailyOffice] = await Promise.all([
+  const [weather, dailyOffice, headlines] = await Promise.all([
     fetchWeather(),
     fetchDailyOffice(makeNullKV(), pacificDate).catch(() => undefined),
+    fetchTopHeadlines(NEWS_API),
   ]);
   const previousOverview = getPreviousOverview();
-  const previousFollowUps = getPreviousFollowUps();
   const previousEngagement = getPreviousEngagement();
   const operatorContext = kvGet("operator_context");
 
-  console.log(`  Weather: ${weather.tempF}°F, code ${weather.weatherCode}`);
+  console.log(`  Weather: H ${weather.highF.toFixed(0)}° / L ${weather.lowF.toFixed(0)}°, code ${weather.weatherCode}`);
+  console.log(`  Headlines: ${headlines.length}`);
   console.log(`  Daily Office: ${dailyOffice ? `${dailyOffice.season} ${dailyOffice.week} ${dailyOffice.day}` : "unavailable"}`);
 
   // 3. Build structured data
@@ -447,8 +485,8 @@ async function main(): Promise<void> {
   console.log("③ Generating summary with Gemini...");
   const llm = await summarizeWithGemini(
     filtered, weather, dateLabel,
-    previousOverview, previousFollowUps, conflicts,
-    previousEngagement, operatorContext ?? undefined,
+    previousOverview, conflicts,
+    previousEngagement, operatorContext ?? undefined, headlines,
   );
 
   // 5. Render HTML
@@ -457,7 +495,6 @@ async function main(): Promise<void> {
     dateLabel, weather,
     overview: llm.overview,
     deltaSinceYesterday: llm.deltaSinceYesterday,
-    followUps: llm.followUps,
     agendaEvents, todos, noteLines,
     dailyOffice: dailyOffice ?? undefined,
   };

@@ -11,12 +11,14 @@ type Env = {
   BROWSER: BrowserWorker;
   GEMINI_API_KEY: string;
   GEMINI_MODEL?: string;
+  NEWS_API?: string;
   REMARKABLE_IMPORT_URL?: string;
   REMARKABLE_DEVICE_TOKEN?: string;
   REMARKABLE_SESSION_TOKEN?: string;
   REMARKABLE_WEBAPP_HOST?: string;
   REMARKABLE_INTERNAL_HOST?: string;
   MS_GRAPH_WORKER_URL?: string;
+  MS_GRAPH_WORKER_TOKEN?: string;
 };
 
 type IngestedItem = {
@@ -59,10 +61,39 @@ type CalendarEvent = {
 
 
 
-type WeatherSnapshot = {
-  tempF: number;
-  weatherCode: number;
-  hourly: Array<{ hour: number; tempF: number; weatherCode: number }>;
+import type { WeatherSnapshot } from "@reorgable/shared";
+
+type NewsHeadline = {
+  title: string;
+  source?: string;
+  publishedAt?: string;
+};
+
+const WEATHER_LABELS: Partial<Record<number, string>> = {
+  0: "Clear sky",
+  1: "Mainly clear",
+  2: "Partly cloudy",
+  3: "Overcast",
+  45: "Foggy",
+  48: "Icy fog",
+  51: "Light drizzle",
+  53: "Drizzle",
+  55: "Heavy drizzle",
+  61: "Light rain",
+  63: "Rain",
+  65: "Heavy rain",
+  71: "Light snow",
+  73: "Snow",
+  75: "Heavy snow",
+  77: "Snow grains",
+  80: "Rain showers",
+  81: "Showers",
+  82: "Heavy showers",
+  85: "Snow showers",
+  86: "Heavy snow showers",
+  95: "Thunderstorm",
+  96: "Thunderstorm with hail",
+  99: "Thunderstorm with heavy hail",
 };
 
 type ArchiveResult = {
@@ -151,11 +182,52 @@ async function fetchWeather(): Promise<WeatherSnapshot> {
     }
   }
 
+  const forecastTemps = temps.filter((temp) => typeof temp === "number");
+  const highF = forecastTemps.length ? Math.max(...forecastTemps) : body.current?.temperature_2m ?? 0;
+  const lowF = forecastTemps.length ? Math.min(...forecastTemps) : body.current?.temperature_2m ?? 0;
+
   return {
-    tempF: body.current?.temperature_2m ?? 0,
+    highF,
+    lowF,
     weatherCode: body.current?.weather_code ?? -1,
     hourly,
   };
+}
+
+async function fetchTopHeadlines(apiKey?: string): Promise<NewsHeadline[]> {
+  if (!apiKey) return [];
+
+  try {
+    const response = await fetch(
+      "https://newsapi.org/v2/top-headlines?country=us&pageSize=5",
+      {
+        headers: {
+          "X-Api-Key": apiKey,
+        },
+      }
+    );
+
+    if (!response.ok) return [];
+
+    const body = (await response.json()) as {
+      articles?: Array<{
+        title?: string;
+        source?: { name?: string };
+        publishedAt?: string;
+      }>;
+    };
+
+    return (body.articles ?? [])
+      .map((article) => ({
+        title: article.title ?? "",
+        source: article.source?.name,
+        publishedAt: article.publishedAt,
+      }))
+      .filter((article) => article.title.trim().length > 0)
+      .slice(0, 5);
+  } catch {
+    return [];
+  }
 }
 
 async function getItemsSinceCursor(env: Env, cursor: string): Promise<IngestedItem[]> {
@@ -341,7 +413,22 @@ function buildCalendarAgenda(items: IngestedItem[], now: Date): CalendarEvent[] 
       };
     })
     .filter((v): v is { title: string; startAt: string; endAt: string; calendarName: string } => !!v)
-    .filter((event) => toPacificDateKey(event.startAt) === todayKey)
+    .filter((event) => toPacificDateKey(event.startAt) === todayKey);
+
+  const dedupedEvents = new Map<string, { title: string; startAt: string; endAt: string; calendarName: string }>();
+  for (const event of events) {
+    const key = `${normalizeForMatch(event.title)}|${new Date(event.startAt).getTime()}|${new Date(event.endAt).getTime()}`;
+    const existing = dedupedEvents.get(key);
+    if (!existing) {
+      dedupedEvents.set(key, event);
+      continue;
+    }
+    if (existing.calendarName === "Calendar" && event.calendarName !== "Calendar") {
+      dedupedEvents.set(key, event);
+    }
+  }
+
+  return Array.from(dedupedEvents.values())
     .sort((a, b) => a.startAt.localeCompare(b.startAt))
     .slice(0, 30)
     .map((event) => ({
@@ -349,8 +436,6 @@ function buildCalendarAgenda(items: IngestedItem[], now: Date): CalendarEvent[] 
       startLabel: formatPacificTime(event.startAt),
       endLabel: formatPacificTime(event.endAt)
     }));
-
-  return events;
 }
 
 type CalendarConflict = {
@@ -398,20 +483,73 @@ function buildGoogleTaskTodos(items: IngestedItem[]): Array<{ task: string; done
         isKnownTask: tags.some((t) => TASK_SOURCE_TAGS.includes(t)),
         externalId: m.externalId ?? null,
         parentTaskId: m.parentTaskId ?? null,
-        dueAt: m.dueAt ?? undefined
+        dueAt: m.dueAt ?? undefined,
+        normalizedTitle: normalizeForMatch(item.title),
+        createdAt: item.created_at
       };
     })
-    .filter((todo) => todo.isKnownTask);
+    .filter((todo) => todo.isKnownTask)
+    .filter((todo) => !(todo.parentTaskId && todo.done));
+
+  const todayStart = new Date();
+  todayStart.setHours(0, 0, 0, 0);
+  const groups = new Map<string, Array<(typeof taskItems)[number]>>();
+  for (const todo of taskItems) {
+    if (todo.done) continue;
+    const parentKey = todo.parentTaskId ?? "__root__";
+    const groupKey = `${parentKey}|${todo.normalizedTitle}`;
+    const group = groups.get(groupKey) ?? [];
+    group.push(todo);
+    groups.set(groupKey, group);
+  }
+
+  const keepOpenKeys = new Set<string>();
+  for (const [groupKey, group] of groups.entries()) {
+    const sorted = group
+      .slice()
+      .sort((left, right) => {
+        const leftDue = left.dueAt ? new Date(left.dueAt).getTime() : Number.NEGATIVE_INFINITY;
+        const rightDue = right.dueAt ? new Date(right.dueAt).getTime() : Number.NEGATIVE_INFINITY;
+        if (leftDue !== rightDue) return leftDue - rightDue;
+        return left.createdAt.localeCompare(right.createdAt);
+      });
+
+    const latest = sorted[sorted.length - 1];
+    const hasCurrentOrFuture = sorted.some((entry) => {
+      if (!entry.dueAt) return false;
+      return new Date(entry.dueAt).getTime() >= todayStart.getTime();
+    });
+
+    if (hasCurrentOrFuture) {
+      for (const entry of sorted) {
+        const isOverdue = entry.dueAt ? new Date(entry.dueAt).getTime() < todayStart.getTime() : false;
+        if (!isOverdue || entry === latest) {
+          keepOpenKeys.add(`${groupKey}|${entry.externalId ?? entry.createdAt}`);
+        }
+      }
+      continue;
+    }
+
+    keepOpenKeys.add(`${groupKey}|${latest.externalId ?? latest.createdAt}`);
+  }
+
+  const filteredTaskItems = taskItems.filter((todo) => {
+    if (todo.done) return true;
+    const parentKey = todo.parentTaskId ?? "__root__";
+    const groupKey = `${parentKey}|${todo.normalizedTitle}`;
+    const entryKey = `${groupKey}|${todo.externalId ?? todo.createdAt}`;
+    return keepOpenKeys.has(entryKey);
+  });
 
   // Group subtasks under their parents
-  const parentIds = new Set(taskItems.map((t) => t.externalId).filter(Boolean));
+  const parentIds = new Set(filteredTaskItems.map((t) => t.externalId).filter(Boolean));
   const result: Array<{ task: string; done: boolean; isSubtask: boolean; dueAt?: string }> = [];
 
-  for (const todo of taskItems) {
+  for (const todo of filteredTaskItems) {
     if (todo.parentTaskId) continue; // skip subtasks in first pass
     result.push({ task: todo.task, done: todo.done, isSubtask: false, dueAt: todo.dueAt });
     // append subtasks immediately after their parent
-    for (const sub of taskItems) {
+    for (const sub of filteredTaskItems) {
       if (sub.parentTaskId === todo.externalId) {
         result.push({ task: sub.task, done: sub.done, isSubtask: true, dueAt: sub.dueAt });
       }
@@ -419,7 +557,7 @@ function buildGoogleTaskTodos(items: IngestedItem[]): Array<{ task: string; done
   }
 
   // Orphan subtasks (parent not in current batch) go at the end
-  for (const todo of taskItems) {
+  for (const todo of filteredTaskItems) {
     if (todo.parentTaskId && !parentIds.has(todo.parentTaskId)) {
       result.push({ task: todo.task, done: todo.done, isSubtask: true, dueAt: todo.dueAt });
     }
@@ -436,7 +574,12 @@ function buildNoteLines(items: IngestedItem[]): string[] {
     .slice(0, 18);
 }
 
-function buildGeminiPrompt(items: IngestedItem[], weather: WeatherSnapshot, dateLabel: string, previousOverview?: string, previousFollowUps?: string[], conflicts?: CalendarConflict[], engagement?: EngagementSummary, operatorContext?: string): string {
+function describeWeather(weather: WeatherSnapshot): string {
+  const label = WEATHER_LABELS[weather.weatherCode] ?? `WMO ${weather.weatherCode}`;
+  return `high ${weather.highF.toFixed(0)}F, low ${weather.lowF.toFixed(0)}F, ${label}`;
+}
+
+function buildGeminiPrompt(items: IngestedItem[], weather: WeatherSnapshot, dateLabel: string, previousOverview?: string, conflicts?: CalendarConflict[], engagement?: EngagementSummary, operatorContext?: string, headlines?: NewsHeadline[]): string {
   const compact = items.map((item) => {
     const meta = safeParseMetadata(item);
     // Convert calendar timestamps to Pacific for the LLM
@@ -466,15 +609,17 @@ function buildGeminiPrompt(items: IngestedItem[], weather: WeatherSnapshot, date
     "You are generating a fixed-format daily brief.",
     `Date: ${dateLabel}`,
     `Timezone: Pacific Time (America/Los_Angeles)`,
-    `Weather: ${weather.tempF}F code ${weather.weatherCode}`,
+    `Weather: ${describeWeather(weather)} (code ${weather.weatherCode})`,
     "Return JSON matching the schema exactly.",
     "Guidance:",
-    "- overview: concise executive summary covering key meetings, tasks, and priorities",
+    "- overview: concise executive summary covering key meetings, tasks, and priorities.",
+    "- overview: the first sentence must describe today's weather using the daily high/low and condition.",
     "- deltaSinceYesterday: summarize what changed since yesterday — new items added, tasks resolved, deadlines shifted. If no previous context is provided, note that this is the first brief.",
-    "- followUps: list specific calls, emails, messages, or actions to take today. Be concrete — name the person, topic, or deliverable.",
     "- use the full content of emails and calendar events to understand what tasks entail",
     "- focus on key dependencies and communication risk",
     "- all times shown are already in Pacific Time",
+    "- overview: if top headlines are provided below, include a brief 'In the News' closing sentence summarizing the key stories.",
+    "- overview: the user is especially interested in major US news, international news, science, technology, business, and Seattle sports (Seahawks, Mariners, Kraken, Sounders, Storm) — prioritize those topics when selecting which headlines to highlight.",
   ];
 
   if (operatorContext) {
@@ -483,13 +628,6 @@ function buildGeminiPrompt(items: IngestedItem[], weather: WeatherSnapshot, date
 
   if (previousOverview) {
     lines.push("", "Yesterday's brief overview (for delta comparison):", previousOverview);
-  }
-
-  if (previousFollowUps?.length) {
-    lines.push("", "Yesterday's follow-ups (check if these were addressed; carry forward unresolved ones):");
-    for (const item of previousFollowUps) {
-      lines.push(`- ${item}`);
-    }
   }
 
   if (conflicts?.length) {
@@ -506,6 +644,17 @@ function buildGeminiPrompt(items: IngestedItem[], weather: WeatherSnapshot, date
     lines.push("", `📊 Previous brief engagement: "${engagement.briefName}" was ${status}.`);
     if (!engagement.stillOnDevice && engagement.retentionHours !== undefined && engagement.retentionHours < 1) {
       lines.push("  The user deleted the brief quickly — consider being more concise today.");
+    }
+  }
+
+  if (headlines?.length) {
+    lines.push(
+      "",
+      "Top headlines (MUST include a 1–2 sentence 'In the News' summary of these in the overview):"
+    );
+    for (const headline of headlines) {
+      const source = headline.source ? ` (${headline.source})` : "";
+      lines.push(`- ${headline.title}${source}`);
     }
   }
 
@@ -529,17 +678,17 @@ async function summarizeWithGemini(
   weather: WeatherSnapshot,
   dateLabel: string,
   previousOverview?: string,
-  previousFollowUps?: string[],
   conflicts?: CalendarConflict[],
   engagement?: EngagementSummary,
-  operatorContext?: string
+  operatorContext?: string,
+  headlines?: NewsHeadline[]
 ): Promise<ReportOutput> {
   if (!env.GEMINI_API_KEY) {
     throw new Error("Missing GEMINI_API_KEY");
   }
 
   const model = env.GEMINI_MODEL ?? "gemini-3-flash-preview";
-  const prompt = buildGeminiPrompt(items, weather, dateLabel, previousOverview, previousFollowUps, conflicts, engagement, operatorContext);
+  const prompt = buildGeminiPrompt(items, weather, dateLabel, previousOverview, conflicts, engagement, operatorContext, headlines);
 
   const response = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${env.GEMINI_API_KEY}`,
@@ -595,7 +744,6 @@ async function renderHtmlToPdf(
     weather: WeatherSnapshot;
     overview: string;
     deltaSinceYesterday: string;
-    followUps: string[];
     agendaEvents: CalendarEvent[];
     todos: Array<{ task: string; done: boolean; dueAt?: string }>;
     noteLines: string[];
@@ -607,7 +755,6 @@ async function renderHtmlToPdf(
     weather: args.weather,
     overview: args.overview,
     deltaSinceYesterday: args.deltaSinceYesterday,
-    followUps: args.followUps,
     agendaEvents: args.agendaEvents,
     todos: args.todos,
     noteLines: args.noteLines,
@@ -645,20 +792,6 @@ async function getPreviousOverview(env: Env): Promise<string | undefined> {
   try {
     const parsed = JSON.parse(row.summary_json) as { overview?: string };
     return parsed.overview || undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-async function getPreviousFollowUps(env: Env): Promise<string[] | undefined> {
-  const row = await env.DB.prepare(
-    `SELECT summary_json FROM report_runs ORDER BY run_at DESC LIMIT 1`
-  ).first<{ summary_json: string }>();
-
-  if (!row?.summary_json) return undefined;
-  try {
-    const parsed = JSON.parse(row.summary_json) as { followUps?: string[] };
-    return parsed.followUps?.length ? parsed.followUps : undefined;
   } catch {
     return undefined;
   }
@@ -777,35 +910,6 @@ async function archivePreviousBrief(
   };
 }
 
-async function dispatchFollowUpsToGraph(
-  env: Env,
-  followUps: string[]
-): Promise<{ dispatched: number; failed: number }> {
-  if (!env.MS_GRAPH_WORKER_URL || followUps.length === 0) {
-    return { dispatched: 0, failed: 0 };
-  }
-
-  const url = env.MS_GRAPH_WORKER_URL.replace(/\/$/, "") + "/tasks/create";
-  let dispatched = 0;
-  let failed = 0;
-
-  for (const followUp of followUps) {
-    try {
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title: followUp }),
-      });
-      if (res.ok) dispatched++;
-      else failed++;
-    } catch {
-      failed++;
-    }
-  }
-
-  return { dispatched, failed };
-}
-
 async function runDailyReport(env: Env, opts?: { force?: boolean; lookbackHours?: number; since?: string }) {
   const now = new Date();
   if (!opts?.force && !shouldRunNow(now)) {
@@ -826,21 +930,24 @@ async function runDailyReport(env: Env, opts?: { force?: boolean; lookbackHours?
   const dateLabel = formatDatePacific(now);
   const fileName = buildFileName(now);
 
-  const [{ items, cursor }, weather] = await Promise.all([getItemsSinceLastRun(env, cursorOverride), fetchWeather()]);
+  const [{ items, cursor }, weather, headlines] = await Promise.all([
+    getItemsSinceLastRun(env, cursorOverride),
+    fetchWeather(),
+    fetchTopHeadlines(env.NEWS_API),
+  ]);
   const filteredItems = filterItemsForBrief(items);
 
   // Skip report if there's nothing meaningful to include
   if (filteredItems.length === 0) {
-    await env.STATE_KV.put("last_report_cursor", cursor);
+    await env.STATE_KV.put("last_report_at", now.toISOString());
     return { ok: true, skipped: true, reason: "No items to include in brief", cursorUsed: cursor };
   }
 
   // Fetch yesterday's overview for delta comparison
   const pacificParts = getPacificParts(now);
   const pacificDate = new Date(pacificParts.year, pacificParts.month - 1, pacificParts.day);
-  const [previousOverview, previousFollowUps, previousEngagement, operatorContext, dailyOffice] = await Promise.all([
+  const [previousOverview, previousEngagement, operatorContext, dailyOffice] = await Promise.all([
     getPreviousOverview(env),
-    getPreviousFollowUps(env),
     getPreviousEngagement(env),
     env.STATE_KV.get("operator_context"),
     fetchDailyOffice(env.STATE_KV, pacificDate).catch(() => undefined),
@@ -851,7 +958,17 @@ async function runDailyReport(env: Env, opts?: { force?: boolean; lookbackHours?
   const todos = buildGoogleTaskTodos(filteredItems);
   const noteLines = buildNoteLines(filteredItems);
 
-  const llmSummary = await summarizeWithGemini(env, filteredItems, weather, dateLabel, previousOverview, previousFollowUps, conflicts, previousEngagement, operatorContext ?? undefined);
+  const llmSummary = await summarizeWithGemini(
+    env,
+    filteredItems,
+    weather,
+    dateLabel,
+    previousOverview,
+    conflicts,
+    previousEngagement,
+    operatorContext ?? undefined,
+    headlines
+  );
 
   const referenceItems = buildReferenceItems(items);
   const refFileName = fileName.replace(".pdf", "-ref.pdf");
@@ -862,7 +979,6 @@ async function runDailyReport(env: Env, opts?: { force?: boolean; lookbackHours?
       weather,
       overview: llmSummary.overview,
       deltaSinceYesterday: llmSummary.deltaSinceYesterday,
-      followUps: llmSummary.followUps,
       agendaEvents,
       todos,
       noteLines,
@@ -922,7 +1038,6 @@ async function runDailyReport(env: Env, opts?: { force?: boolean; lookbackHours?
     JSON.stringify({
       overview: llmSummary.overview,
       deltaSinceYesterday: llmSummary.deltaSinceYesterday,
-      followUps: llmSummary.followUps,
       agendaEvents,
       todos,
       noteLines
@@ -947,9 +1062,6 @@ async function runDailyReport(env: Env, opts?: { force?: boolean; lookbackHours?
     await env.STATE_KV.put("last_report_at", now.toISOString());
   }
 
-  // Dispatch follow-ups as tasks to Microsoft To Do (best-effort)
-  const followUpDispatch = await dispatchFollowUpsToGraph(env, llmSummary.followUps);
-
   return {
     ok: true,
     skipped: false,
@@ -959,7 +1071,6 @@ async function runDailyReport(env: Env, opts?: { force?: boolean; lookbackHours?
     remarkable: uploadResult!,
     referenceDoc: multiResult!.results[1] ?? null,
     archive: archiveResult,
-    followUpDispatch,
   };
 }
 

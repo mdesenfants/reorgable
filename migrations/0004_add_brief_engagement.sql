@@ -13,4 +13,4 @@ CREATE INDEX IF NOT EXISTS idx_brief_engagement_report_run ON brief_engagement(r
 CREATE INDEX IF NOT EXISTS idx_brief_engagement_uploaded ON brief_engagement(uploaded_at);
 
 -- Add remarkable_doc_id column to report_runs so we can track the uploaded doc
-ALTER TABLE report_runs ADD COLUMN remarkable_doc_id TEXT;
+ALTER TABLE report_runs ADD COLUMN IF NOT EXISTS remarkable_doc_id TEXT;
