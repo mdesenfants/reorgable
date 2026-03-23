@@ -525,11 +525,16 @@ export function renderHtml(data: TemplateData): string {
     }
 
     /* ── Day calendar page ─────────────────────────────────────────── */
+    /* Named page removes side margins so the calendar shell can truly bleed */
+    @page day-view { size: Letter; margin: 0.55in 0 0.5in; }
     .day-view-page {
+      page: day-view;
       break-before: page;
       height: 9.95in;
       display: flex;
       flex-direction: column;
+      padding: 0 0.65in;
+      box-sizing: border-box;
     }
     .day-view-title { font-size: 20pt; font-weight: 700; margin: 0 0 0.25em; }
     .day-view-sub { font-size: 12pt; color: #333; margin: 0 0 0.45em; }
@@ -544,6 +549,8 @@ export function renderHtml(data: TemplateData): string {
       min-height: 0;
       overflow: hidden;
       background: #fff;
+      margin-left: -0.65in;
+      margin-right: -0.65in;
     }
     .calendar-grid {
       position: absolute;
@@ -554,7 +561,7 @@ export function renderHtml(data: TemplateData): string {
       left: 0;
       right: 0;
       display: grid;
-      grid-template-columns: 84px 1fr;
+      grid-template-columns: calc(0.65in + 84px) 1fr;
       align-items: center;
     }
     .calendar-row-label {
@@ -567,14 +574,13 @@ export function renderHtml(data: TemplateData): string {
       border-top: 1px solid #bbb;
       display: block;
       height: 0;
-      margin-right: 0.5em;
     }
     .calendar-events {
       position: absolute;
       top: 0;
       bottom: 0;
-      left: 88px;
-      right: 0.5em;
+      left: calc(0.65in + 88px);
+      right: 0;
     }
     .calendar-event {
       position: absolute;
