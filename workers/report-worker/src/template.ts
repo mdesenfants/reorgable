@@ -69,21 +69,21 @@ function weatherRangeLabel(code: number, highF: number, lowF: number): string {
   return `H ${highF.toFixed(0)}° / L ${lowF.toFixed(0)}° · ${weatherLabel(code)}`;
 }
 
-// WMO code → Weather Icons class (free vector icon font, crisp on e-ink).
-const WMO_ICON: Partial<Record<number, string>> = {
-  0: "wi-day-sunny", 1: "wi-day-sunny-overcast", 2: "wi-day-cloudy", 3: "wi-cloudy",
-  45: "wi-fog", 48: "wi-fog",
-  51: "wi-sprinkle", 53: "wi-sprinkle", 55: "wi-sprinkle",
-  61: "wi-rain-mix", 63: "wi-rain", 65: "wi-rain-wind",
-  71: "wi-snow", 73: "wi-snow", 75: "wi-snow", 77: "wi-snow",
-  80: "wi-showers", 81: "wi-showers", 82: "wi-showers",
-  85: "wi-rain-mix", 86: "wi-rain-mix",
-  95: "wi-thunderstorm", 96: "wi-thunderstorm", 99: "wi-thunderstorm",
+// WMO code → emoji glyph (inline, no CSS pseudo-elements for robust PDF rendering).
+const WMO_EMOJI: Partial<Record<number, string>> = {
+  0: "\u2600", 1: "\uD83C\uDF24", 2: "\u26C5", 3: "\u2601",
+  45: "\uD83C\uDF2B", 48: "\uD83C\uDF2B",
+  51: "\uD83C\uDF26", 53: "\uD83C\uDF26", 55: "\uD83C\uDF26",
+  61: "\uD83C\uDF27", 63: "\uD83C\uDF27", 65: "\uD83C\uDF27",
+  71: "\u2744", 73: "\u2744", 75: "\u2744", 77: "\u2744",
+  80: "\uD83C\uDF26", 81: "\uD83C\uDF26", 82: "\uD83C\uDF26",
+  85: "\uD83C\uDF27", 86: "\uD83C\uDF27",
+  95: "\u26C8", 96: "\u26C8", 99: "\u26C8",
 };
 
 function wmoIcon(code: number): string {
-  const cls = WMO_ICON[code] ?? "wi-na";
-  return `<i class="wi ${cls}"></i>`;
+  const emoji = WMO_EMOJI[code] ?? "\u2753";
+  return `<span class="wi">${emoji}</span>`;
 }
 
 /**
@@ -136,23 +136,8 @@ export function renderReferenceHtml(data: ReferenceTemplateData): string {
   <title>Reference \u2013 ${esc(data.dateLabel)}</title>
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400..900;1,400..900&display=swap');
-    /* Minimal weather icon styles (local, no external CDN dependency).
-       Some WMO conditions share an emoji because Unicode doesn't have a unique
-       glyph for every precipitation variant (e.g., rain vs. rain-mix vs. rain-wind). */
+    /* Weather icon inline styles (emoji embedded directly for robust PDF rendering). */
     .wi { font-style: normal; display: inline-block; margin-right: 3px; }
-    .wi-day-sunny::before         { content: "☀"; }
-    .wi-day-sunny-overcast::before{ content: "🌤"; }
-    .wi-day-cloudy::before        { content: "⛅"; }
-    .wi-cloudy::before            { content: "☁"; }
-    .wi-fog::before               { content: "🌫"; }
-    .wi-sprinkle::before,
-    .wi-showers::before           { content: "🌦"; }
-    .wi-rain-mix::before,
-    .wi-rain::before,
-    .wi-rain-wind::before         { content: "🌧"; }
-    .wi-snow::before              { content: "❄"; }
-    .wi-thunderstorm::before      { content: "⛈"; }
-    .wi-na::before                { content: "❓"; }
     html, body { margin: 0; padding: 0; }
     body {
       font-family: 'Playfair Display', serif;
@@ -205,14 +190,13 @@ function renderOfficePage(office: DailyOfficeData): string {
   const subtitle = office.title
     ? `${office.title} \u00b7 ${office.day}`
     : `${office.week} \u00b7 ${office.day}`;
-  const studyHeader = `<div class="office-section-title">Study</div>`;
   const psalmHtml = office.study.psalms
     .map((p) => renderOfficeLesson(p.reference, p))
     .join("");
   const lessonHtml = office.study.lessons
     .map((lesson, index) => renderOfficeLesson(`Lesson ${index + 1}`, lesson))
     .join("");
-  const lessons = studyHeader + psalmHtml + lessonHtml;
+  const lessons = psalmHtml + lessonHtml;
   return `
   <div class="office-page">
     <div class="office-columns">
@@ -336,23 +320,8 @@ export function renderHtml(data: TemplateData): string {
   <title>Daily Brief \u2013 ${esc(data.dateLabel)}</title>
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400..900;1,400..900&display=swap');
-    /* Minimal weather icon styles (local, no external CDN dependency).
-       Some WMO conditions share an emoji because Unicode doesn't have a unique
-       glyph for every precipitation variant (e.g., rain vs. rain-mix vs. rain-wind). */
+    /* Weather icon inline styles (emoji embedded directly for robust PDF rendering). */
     .wi { font-style: normal; display: inline-block; margin-right: 3px; }
-    .wi-day-sunny::before         { content: "☀"; }
-    .wi-day-sunny-overcast::before{ content: "🌤"; }
-    .wi-day-cloudy::before        { content: "⛅"; }
-    .wi-cloudy::before            { content: "☁"; }
-    .wi-fog::before               { content: "🌫"; }
-    .wi-sprinkle::before,
-    .wi-showers::before           { content: "🌦"; }
-    .wi-rain-mix::before,
-    .wi-rain::before,
-    .wi-rain-wind::before         { content: "🌧"; }
-    .wi-snow::before              { content: "❄"; }
-    .wi-thunderstorm::before      { content: "⛈"; }
-    .wi-na::before                { content: "❓"; }
 
     /* ── Design System ─────────────────────────────────────────────── */
     @page {
@@ -575,6 +544,8 @@ export function renderHtml(data: TemplateData): string {
       min-height: 0;
       overflow: hidden;
       background: #fff;
+      margin-left: -0.65in;
+      margin-right: -0.65in;
     }
     .calendar-grid {
       position: absolute;
@@ -585,7 +556,7 @@ export function renderHtml(data: TemplateData): string {
       left: 0;
       right: 0;
       display: grid;
-      grid-template-columns: 72px 1fr;
+      grid-template-columns: calc(0.65in + 84px) 1fr;
       align-items: center;
     }
     .calendar-row-label {
@@ -593,6 +564,7 @@ export function renderHtml(data: TemplateData): string {
       color: #333;
       text-align: right;
       padding-right: 0.5em;
+      padding-left: 0.65in;
     }
     .calendar-row-line {
       border-top: 1px solid #bbb;
@@ -604,8 +576,8 @@ export function renderHtml(data: TemplateData): string {
       position: absolute;
       top: 0;
       bottom: 0;
-      left: 76px;
-      right: 0.5em;
+      left: calc(0.65in + 88px);
+      right: 0.65in;
     }
     .calendar-event {
       position: absolute;

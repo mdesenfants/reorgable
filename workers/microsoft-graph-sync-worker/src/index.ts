@@ -14,6 +14,19 @@
  *   INGEST_API_TOKEN  – Bearer token for the ingest worker
  */
 
+import {
+  buildTaskPayload,
+  buildCalendarPayload,
+  getTodayDateRange,
+  toUtcIso,
+  mapImportance,
+  type TodoList,
+  type TodoTask,
+  type CalendarEvent,
+  type IngestTaskPayload,
+  type IngestCalendarPayload,
+} from "./sync-helpers.js";
+
 export interface Env {
   MS_CLIENT_ID: string;
   MS_CLIENT_SECRET: string;
@@ -147,45 +160,32 @@ async function graphGetAll<T>(
 // To Do task sync
 // ---------------------------------------------------------------------------
 
-type TodoList = {
-  id: string;
-  displayName: string;
-  wellknownListName: string;
-};
+async function processTasksInList(
+  token: string,
+  env: Env,
+  list: TodoList
+): Promise<{ pushed: number; failed: number }> {
+  const isFlaggedEmail = list.wellknownListName === "flaggedEmails";
+  const tag = isFlaggedEmail ? "microsoft-flagged-email" : "microsoft-todo";
 
-type TodoTask = {
-  id: string;
-  title: string;
-  status?: string; // "notStarted" | "inProgress" | "waitingOnOthers" | "deferred" | "completed"
-  importance?: "low" | "normal" | "high";
-  body?: { content?: string; contentType?: string };
-  dueDateTime?: { dateTime: string; timeZone: string };
-  parentList?: { id: string };
-};
+  const tasks = await graphGetAll<TodoTask>(
+    token,
+    `/users/${env.MS_USER_ID}/todo/lists/${encodeURIComponent(list.id)}/tasks`
+  );
 
-type IngestTaskPayload = {
-  title: string;
-  details?: string;
-  dueAt?: string;
-  priority: "low" | "medium" | "high";
-  tags: string[];
-  isDone: boolean;
-  externalId: string;
-};
+  let pushed = 0;
+  let failed = 0;
 
-function mapImportance(importance: TodoTask["importance"]): "low" | "medium" | "high" {
-  if (!importance) return "medium";
-  if (importance === "high") return "high";
-  if (importance === "low") return "low";
-  return "medium";
-}
+  for (const task of tasks) {
+    if (task.status === "completed") continue;
 
-function toUtcIso(dateTime: string, _timeZone: string): string {
-  // Graph returns dateTime in UTC when timeZone is "UTC", or local time otherwise.
-  // For simplicity we treat the value as UTC — most Graph clients store due dates
-  // as date-only values (e.g. "2026-03-20T00:00:00.0000000") scoped to UTC.
-  if (dateTime.endsWith("Z") || dateTime.includes("+")) return dateTime;
-  return dateTime + "Z";
+    const payload = buildTaskPayload(task, tag);
+    const ok = await postToIngest(env, "/ingest/task", payload);
+    if (ok) pushed++;
+    else failed++;
+  }
+
+  return { pushed, failed };
 }
 
 async function syncTodoTasks(
@@ -201,38 +201,9 @@ async function syncTodoTasks(
   let failed = 0;
 
   for (const list of lists) {
-    const isFlaggedEmail = list.wellknownListName === "flaggedEmails";
-    const tag = isFlaggedEmail ? "microsoft-flagged-email" : "microsoft-todo";
-
-    // Some tenants reject $filter/$select for this endpoint with ParseUri errors,
-    // so fetch the list tasks directly and filter completed tasks locally.
-    const tasks = await graphGetAll<TodoTask>(
-      token,
-      `/users/${env.MS_USER_ID}/todo/lists/${encodeURIComponent(list.id)}/tasks`
-    );
-
-    for (const task of tasks) {
-      if (task.status === "completed") continue;
-
-      const payload: IngestTaskPayload = {
-        title: task.title || "Untitled task",
-        details:
-          task.body?.content && task.body.contentType === "text"
-            ? task.body.content.trim() || undefined
-            : undefined,
-        dueAt: task.dueDateTime
-          ? toUtcIso(task.dueDateTime.dateTime, task.dueDateTime.timeZone)
-          : undefined,
-        priority: mapImportance(task.importance),
-        tags: [tag],
-        isDone: false,
-        externalId: task.id,
-      };
-
-      const ok = await postToIngest(env, "/ingest/task", payload);
-      if (ok) pushed++;
-      else failed++;
-    }
+    const result = await processTasksInList(token, env, list);
+    pushed += result.pushed;
+    failed += result.failed;
   }
 
   return { pushed, failed };
@@ -242,36 +213,11 @@ async function syncTodoTasks(
 // Calendar sync
 // ---------------------------------------------------------------------------
 
-type CalendarEvent = {
-  id: string;
-  subject: string;
-  start: { dateTime: string; timeZone: string };
-  end: { dateTime: string; timeZone: string };
-  isAllDay: boolean;
-  calendar?: { name: string };
-};
-
-type IngestCalendarPayload = {
-  title: string;
-  startAt: string;
-  endAt: string;
-  calendarName: string;
-  isAllDay: boolean;
-  externalId: string;
-};
-
 async function syncCalendarEvents(
   token: string,
   env: Env
 ): Promise<{ pushed: number; failed: number }> {
-  // Build today's date range in UTC (00:00 – 23:59:59)
-  const now = new Date();
-  const todayStart = new Date(
-    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0)
-  ).toISOString();
-  const todayEnd = new Date(
-    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 23, 59, 59)
-  ).toISOString();
+  const { start: todayStart, end: todayEnd } = getTodayDateRange();
 
   // calendarView returns expanded recurring events; expand the calendar name via $expand
   const events = await graphGetAll<CalendarEvent>(
@@ -290,15 +236,7 @@ async function syncCalendarEvents(
   let failed = 0;
 
   for (const event of events) {
-    const payload: IngestCalendarPayload = {
-      title: event.subject || "Untitled event",
-      startAt: toUtcIso(event.start.dateTime, event.start.timeZone),
-      endAt: toUtcIso(event.end.dateTime, event.end.timeZone),
-      calendarName: event.calendar?.name ?? "Calendar",
-      isAllDay: event.isAllDay,
-      externalId: event.id,
-    };
-
+    const payload = buildCalendarPayload(event);
     const ok = await postToIngest(env, "/ingest/calendar", payload);
     if (ok) pushed++;
     else failed++;
@@ -434,87 +372,118 @@ async function postToIngest(
 }
 
 // ---------------------------------------------------------------------------
+// Route handlers
+// ---------------------------------------------------------------------------
+
+async function handleHealthCheck(): Promise<Response> {
+  return new Response(
+    JSON.stringify({ ok: true, service: "microsoft-graph-sync-worker" }),
+    { headers: { "Content-Type": "application/json" } }
+  );
+}
+
+async function handleRunSync(env: Env, request: Request): Promise<Response> {
+  if (!isAuthorized(request, env)) return unauthorizedResponse();
+  const result = await runSync(env);
+  return new Response(JSON.stringify(result), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+async function handleCreateTask(env: Env, request: Request): Promise<Response> {
+  if (!isAuthorized(request, env)) return unauthorizedResponse();
+  try {
+    const body = (await request.json()) as { title?: string; dueDate?: string; listId?: string };
+    if (!body.title) {
+      return new Response(JSON.stringify({ error: "title is required" }), {
+        status: 400,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    const listId = body.listId ?? (await getDefaultTaskListId(env));
+    const created = await createTask(env, listId, body.title, body.dueDate);
+    return new Response(JSON.stringify({ ok: true, task: created }), {
+      status: 201,
+      headers: { "Content-Type": "application/json" },
+    });
+  } catch (err) {
+    console.error("Error creating Microsoft To Do task", err);
+    return new Response(JSON.stringify({ error: "Failed to create task" }), {
+      status: 500,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+}
+
+async function handleCompleteTask(env: Env, request: Request): Promise<Response> {
+  if (!isAuthorized(request, env)) return unauthorizedResponse();
+  try {
+    const body = (await request.json()) as { taskId?: string; listId?: string };
+    if (!body.taskId) {
+      return new Response(JSON.stringify({ error: "taskId is required" }), {
+        status: 400,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    const listId = body.listId ?? (await getDefaultTaskListId(env));
+    await completeTask(env, listId, body.taskId);
+    return new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  } catch (err) {
+    console.error("Error completing Microsoft To Do task", err);
+    return new Response(JSON.stringify({ error: "Failed to complete task" }), {
+      status: 500,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+}
+
+function handleNotFound(): Response {
+  return new Response(JSON.stringify({ error: "Not found" }), {
+    status: 404,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Route dispatcher
+// ---------------------------------------------------------------------------
+
+async function routeRequest(request: Request, env: Env): Promise<Response> {
+  const { pathname } = new URL(request.url);
+  const method = request.method;
+
+  // Route GET requests
+  if (method === "GET" && pathname === "/health") {
+    return handleHealthCheck();
+  }
+
+  // Route POST requests to /run endpoint
+  if (method === "POST" && pathname === "/run") {
+    return handleRunSync(env, request);
+  }
+
+  // Route POST requests to /tasks/* endpoints
+  if (method === "POST") {
+    if (pathname === "/tasks/create") return handleCreateTask(env, request);
+    if (pathname === "/tasks/complete") return handleCompleteTask(env, request);
+  }
+
+  // Default 404
+  return handleNotFound();
+}
+
+// ---------------------------------------------------------------------------
 // Worker export
 // ---------------------------------------------------------------------------
 
 export default {
   // Health check endpoint — useful for wrangler dev testing
   async fetch(request: Request, env: Env): Promise<Response> {
-    const { pathname } = new URL(request.url);
-
-    if (request.method === "GET" && pathname === "/health") {
-      return new Response(
-        JSON.stringify({ ok: true, service: "microsoft-graph-sync-worker" }),
-        { headers: { "Content-Type": "application/json" } }
-      );
-    }
-
-    // Allow manually triggering a sync via POST /run (for testing)
-    if (request.method === "POST" && pathname === "/run") {
-      if (!isAuthorized(request, env)) return unauthorizedResponse();
-      const result = await runSync(env);
-      return new Response(JSON.stringify(result), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      });
-    }
-
-    // Create a new task in Microsoft To Do
-    if (request.method === "POST" && pathname === "/tasks/create") {
-      if (!isAuthorized(request, env)) return unauthorizedResponse();
-      try {
-        const body = (await request.json()) as { title?: string; dueDate?: string; listId?: string };
-        if (!body.title) {
-          return new Response(JSON.stringify({ error: "title is required" }), {
-            status: 400,
-            headers: { "Content-Type": "application/json" },
-          });
-        }
-        const listId = body.listId ?? (await getDefaultTaskListId(env));
-        const created = await createTask(env, listId, body.title, body.dueDate);
-        return new Response(JSON.stringify({ ok: true, task: created }), {
-          status: 201,
-          headers: { "Content-Type": "application/json" },
-        });
-      } catch (err) {
-        console.error("Error creating Microsoft To Do task", err);
-        return new Response(JSON.stringify({ error: "Failed to create task" }), {
-          status: 500,
-          headers: { "Content-Type": "application/json" },
-        });
-      }
-    }
-
-    // Complete a task in Microsoft To Do
-    if (request.method === "POST" && pathname === "/tasks/complete") {
-      if (!isAuthorized(request, env)) return unauthorizedResponse();
-      try {
-        const body = (await request.json()) as { taskId?: string; listId?: string };
-        if (!body.taskId) {
-          return new Response(JSON.stringify({ error: "taskId is required" }), {
-            status: 400,
-            headers: { "Content-Type": "application/json" },
-          });
-        }
-        const listId = body.listId ?? (await getDefaultTaskListId(env));
-        await completeTask(env, listId, body.taskId);
-        return new Response(JSON.stringify({ ok: true }), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        });
-      } catch (err) {
-        console.error("Error completing Microsoft To Do task", err);
-        return new Response(JSON.stringify({ error: "Failed to complete task" }), {
-          status: 500,
-          headers: { "Content-Type": "application/json" },
-        });
-      }
-    }
-
-    return new Response(JSON.stringify({ error: "Not found" }), {
-      status: 404,
-      headers: { "Content-Type": "application/json" },
-    });
+    return routeRequest(request, env);
   },
 
   async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {

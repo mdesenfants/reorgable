@@ -71,7 +71,8 @@ The `quick-note.sh` script POSTs to the ingest worker's `/ingest/note` endpoint.
 Two automated syncs keep the ingest database fresh throughout the day:
 
 **Google Apps Script** (runs on a timer you set, typically every 15 min):
-- Pushes incomplete Google Tasks to `/ingest/task`
+- Pushes open Google Tasks to `/ingest/task`
+- Pushes recently completed/deleted Google Tasks to `/ingest/task` with `isDone=true`
 - Pushes today's Google Calendar events (all calendars) to `/ingest/calendar`
 
 **Microsoft Graph sync worker** (cron at `11:00 UTC` / 4 AM Pacific):
@@ -476,11 +477,26 @@ Deployed reference: `scripts/google-apps-script-task-push.deployed.gs`
    - `INGEST_URL` — your ingest worker URL
    - `INGEST_API_TOKEN` — your shared token
    - `TASKLIST_ID` — optional, defaults to `@default`
+  - `TASKS_UPDATED_CURSOR` — optional; managed automatically after the first run
 5. Add a time-based trigger for `pushTasksToReorgable` (every 15 minutes works well).
 
 The script pushes:
 - Open Google Tasks to `/ingest/task`
+- Recently completed/deleted tasks (via `updatedMin`) to `/ingest/task` with `isDone=true`
 - Today's events from all calendars to `/ingest/calendar`
+
+---
+
+## Complexity checks
+
+Cyclomatic complexity enforcement is wired through two scripts:
+
+- `npm run complexity:report` — prints both whole-file and worst-symbol cyclomatic scores.
+- `npm run complexity:check` — fails when either threshold is exceeded (`symbol > 40` or `file > 200`).
+
+Use `npm run lint` to run ESLint, including the `complexity` rule gate.
+
+Serena MCP can be enabled for this workspace via `.vscode/mcp.json` (requires `uvx` on your PATH).
 
 ---
 

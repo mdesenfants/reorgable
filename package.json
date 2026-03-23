@@ -11,6 +11,9 @@
   ],
   "scripts": {
     "typecheck": "npm run --workspaces typecheck",
+    "lint": "eslint . --ext .ts",
+    "complexity:report": "tsx scripts/complexity-report.ts",
+    "complexity:check": "tsx scripts/complexity-report.ts --max-symbol 30 --max-file 50 --fail-on-violation",
     "dev:ingest": "npm run -w @reorgable/ingest-worker dev",
     "dev:report": "npm run -w @reorgable/report-worker dev",
     "dev:email": "npm run -w @reorgable/email-worker dev",
@@ -26,7 +29,10 @@
     "deploy:report": "npm run -w @reorgable/report-worker deploy && npm run test:deployed"
   },
   "devDependencies": {
+    "@typescript-eslint/eslint-plugin": "^8.31.1",
+    "@typescript-eslint/parser": "^8.31.1",
     "@cloudflare/workers-types": "^4.20260317.1",
+    "eslint": "^9.23.0",
     "puppeteer": "^24.0.0",
     "tsx": "^4.19.3",
     "typescript": "^5.9.3",

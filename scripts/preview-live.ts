@@ -29,6 +29,19 @@ import { parseArgs } from "node:util";
 import { renderHtml, type TemplateData } from "../workers/report-worker/src/template.js";
 import { fetchDailyOffice, type DailyOfficeData } from "../workers/report-worker/src/daily-office.js";
 import { reportOutputSchema, reportOutputJsonSchema } from "../packages/shared/src/report-schema.js";
+import { buildGeminiPrompt, type CalendarConflict, type EngagementSummary } from "./gemini-prompt.js";
+import { fetchWeather } from "./weather-helper.js";
+import { fetchTopHeadlines, type NewsHeadline } from "./news-helper.js";
+import { getPreviousOverview, getPreviousEngagement } from "./data-retrieval-helpers.js";
+import {
+  emailIsLinkedToTask,
+  filterItemsForBrief,
+  buildGoogleTaskTodos,
+  buildNoteLines,
+  safeParseMetadata,
+  type IngestedItem,
+  type ItemMetadata,
+} from "./item-processing-helpers.js";
 
 type PreviewKVNamespace = {
   get: (key: string) => Promise<string | null>;
@@ -100,33 +113,6 @@ function makeNullKV(): PreviewKVNamespace {
 
 // ── Types (mirrored from worker) ────────────────────────────────────
 
-type IngestedItem = {
-  id: string;
-  source_type: "task" | "document" | "email" | "note" | "calendar";
-  title: string;
-  summary_input: string;
-  metadata_json: string;
-  created_at: string;
-};
-
-type ItemMetadata = {
-  isDone?: boolean;
-  isUnread?: boolean;
-  inInbox?: boolean;
-  tags?: string[];
-  relatedEmailSubject?: string;
-  relatedEmailFrom?: string;
-  relatedEmailMessageId?: string;
-  from?: string;
-  to?: string;
-  startAt?: string;
-  endAt?: string;
-  calendarName?: string;
-  externalId?: string;
-  parentTaskId?: string;
-  dueAt?: string;
-};
-
 import type { WeatherSnapshot } from "@reorgable/shared";
 
 type NewsHeadline = {
@@ -157,55 +143,8 @@ type EngagementSummary = {
 
 // ── Pure functions (same logic as worker) ───────────────────────────
 
-function safeParseMetadata(item: IngestedItem): ItemMetadata {
-  try {
-    const p = JSON.parse(item.metadata_json) as ItemMetadata;
-    return p && typeof p === "object" ? p : {};
-  } catch {
-    return {};
-  }
-}
-
 function normalizeForMatch(v: string): string {
   return v.toLowerCase().replace(/[^a-z0-9\s@.-]+/g, " ").replace(/\s+/g, " ").trim();
-}
-
-function tokenize(v: string): Set<string> {
-  const stop = new Set(["the","and","for","with","from","that","this","have","will","your","about","reply","email","thread","follow","message"]);
-  return new Set(normalizeForMatch(v).split(" ").filter(w => w.length >= 4 && !stop.has(w)));
-}
-
-function overlapCount(a: Set<string>, b: Set<string>): number {
-  let n = 0;
-  for (const w of a) if (b.has(w)) n++;
-  return n;
-}
-
-function emailIsLinkedToTask(task: IngestedItem, email: IngestedItem): boolean {
-  const tm = safeParseMetadata(task);
-  const em = safeParseMetadata(email);
-  if (tm.relatedEmailMessageId && em.externalId && normalizeForMatch(tm.relatedEmailMessageId) === normalizeForMatch(em.externalId)) return true;
-  const titleTokens = tokenize(task.title);
-  const emailTokens = tokenize(email.title);
-  if (titleTokens.size >= 2 && emailTokens.size >= 2 && overlapCount(titleTokens, emailTokens) >= 2) return true;
-  if (tm.relatedEmailFrom && em.from && normalizeForMatch(tm.relatedEmailFrom) === normalizeForMatch(em.from)) {
-    if (tm.relatedEmailSubject && overlapCount(tokenize(tm.relatedEmailSubject), emailTokens) >= 2) return true;
-  }
-  return false;
-}
-
-function filterItemsForBrief(items: IngestedItem[]): IngestedItem[] {
-  const tasks = items.filter(i => i.source_type === "task");
-  const nonEmails = items.filter(i => i.source_type !== "email");
-  const inboxEmails = items.filter(i => {
-    if (i.source_type !== "email") return false;
-    return safeParseMetadata(i).inInbox === true;
-  });
-  const openTasks = tasks.filter(i => safeParseMetadata(i).isDone !== true);
-  const matchedIds = new Set<string>();
-  for (const task of openTasks) for (const email of inboxEmails) if (emailIsLinkedToTask(task, email)) matchedIds.add(email.id);
-  const linked = inboxEmails.filter(e => matchedIds.has(e.id));
-  return [...nonEmails, ...linked].sort((a, b) => a.created_at.localeCompare(b.created_at));
 }
 
 function toPacificDateKey(iso: string): string {
@@ -249,28 +188,6 @@ function detectCalendarConflicts(events: CalendarEvent[]): CalendarConflict[] {
   return out;
 }
 
-const TASK_SOURCE_TAGS = ["google-tasks", "microsoft-todo", "microsoft-flagged-email"];
-
-function buildGoogleTaskTodos(items: IngestedItem[]) {
-  const taskItems = items.filter(i => i.source_type === "task").map(i => {
-    const m = safeParseMetadata(i);
-    return { task: i.title, done: m.isDone === true, isKnownTask: (m.tags ?? []).some(t => TASK_SOURCE_TAGS.includes(t)), externalId: m.externalId ?? null, parentTaskId: m.parentTaskId ?? null, dueAt: m.dueAt };
-  }).filter(t => t.isKnownTask);
-  const parentIds = new Set(taskItems.map(t => t.externalId).filter(Boolean));
-  const result: Array<{ task: string; done: boolean; isSubtask: boolean; dueAt?: string }> = [];
-  for (const t of taskItems) {
-    if (t.parentTaskId) continue;
-    result.push({ task: t.task, done: t.done, isSubtask: false, dueAt: t.dueAt });
-    for (const s of taskItems) if (s.parentTaskId === t.externalId) result.push({ task: s.task, done: s.done, isSubtask: true, dueAt: s.dueAt });
-  }
-  for (const t of taskItems) if (t.parentTaskId && !parentIds.has(t.parentTaskId)) result.push({ task: t.task, done: t.done, isSubtask: true, dueAt: t.dueAt });
-  return result.slice(0, 25);
-}
-
-function buildNoteLines(items: IngestedItem[]): string[] {
-  return items.filter(i => i.source_type === "note").map(i => i.summary_input.trim()).filter(Boolean).slice(0, 18);
-}
-
 // ── Data fetchers ───────────────────────────────────────────────────
 
 function getItemsSinceLastRun(cursorOverride?: string): { items: IngestedItem[]; cursor: string } {
@@ -282,7 +199,7 @@ function getItemsSinceLastRun(cursorOverride?: string): { items: IngestedItem[];
     `SELECT id, source_type, title, summary_input, metadata_json, created_at FROM items WHERE created_at > '${cursor}' ORDER BY created_at ASC`,
   );
   const outstanding = d1Query<IngestedItem>(
-    `SELECT id, source_type, title, summary_input, metadata_json, created_at FROM items WHERE source_type = 'task' AND COALESCE(json_extract(metadata_json, '$.isDone'), 0) != 1 ORDER BY created_at ASC`,
+    `SELECT id, source_type, title, summary_input, metadata_json, created_at FROM items WHERE source_type = 'task' AND COALESCE(json_extract(metadata_json, '$.isDone'), 0) != 1 AND created_at > datetime('now', '-4 hours') ORDER BY created_at ASC`,
   );
 
   const merged = new Map<string, IngestedItem>();
@@ -290,109 +207,6 @@ function getItemsSinceLastRun(cursorOverride?: string): { items: IngestedItem[];
   for (const i of outstanding) merged.set(i.id, i);
 
   return { items: Array.from(merged.values()).sort((a, b) => a.created_at.localeCompare(b.created_at)), cursor };
-}
-
-async function fetchWeather(): Promise<WeatherSnapshot> {
-  const url = "https://api.open-meteo.com/v1/forecast?latitude=47.8209&longitude=-122.3151&current=temperature_2m,weather_code&hourly=temperature_2m,weather_code&temperature_unit=fahrenheit&timezone=America/Los_Angeles&forecast_days=1";
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Open-Meteo failed: ${res.status}`);
-  const body = await res.json() as { current?: { temperature_2m?: number; weather_code?: number }; hourly?: { time?: string[]; temperature_2m?: number[]; weather_code?: number[] } };
-  const hourly: WeatherSnapshot["hourly"] = [];
-  const times = body.hourly?.time ?? [], temps = body.hourly?.temperature_2m ?? [], codes = body.hourly?.weather_code ?? [];
-  for (let i = 0; i < times.length; i++) { const h = parseInt(times[i].split("T")[1].split(":")[0], 10); if (h >= 6 && h <= 21) hourly.push({ hour: h, tempF: temps[i] ?? 0, weatherCode: codes[i] ?? -1 }); }
-  const forecastTemps = temps.filter((temp) => typeof temp === "number");
-  const highF = forecastTemps.length ? Math.max(...forecastTemps) : body.current?.temperature_2m ?? 0;
-  const lowF = forecastTemps.length ? Math.min(...forecastTemps) : body.current?.temperature_2m ?? 0;
-  return { highF, lowF, weatherCode: body.current?.weather_code ?? -1, hourly };
-}
-
-async function fetchTopHeadlines(apiKey?: string): Promise<NewsHeadline[]> {
-  if (!apiKey) return [];
-  try {
-    const res = await fetch("https://newsapi.org/v2/top-headlines?country=us&pageSize=5", {
-      headers: { "X-Api-Key": apiKey },
-    });
-    if (!res.ok) return [];
-    const body = await res.json() as {
-      articles?: Array<{ title?: string; source?: { name?: string }; publishedAt?: string }>;
-    };
-    return (body.articles ?? [])
-      .map((a) => ({ title: a.title ?? "", source: a.source?.name, publishedAt: a.publishedAt }))
-      .filter((a) => a.title.trim().length > 0)
-      .slice(0, 5);
-  } catch {
-    return [];
-  }
-}
-
-function getPreviousOverview(): string | undefined {
-  const rows = d1Query<{ summary_json: string }>("SELECT summary_json FROM report_runs ORDER BY run_at DESC LIMIT 1");
-  if (!rows[0]?.summary_json) return undefined;
-  try { return (JSON.parse(rows[0].summary_json) as { overview?: string }).overview || undefined; } catch { return undefined; }
-}
-
-function getPreviousEngagement(): EngagementSummary | undefined {
-  const rows = d1Query<{ remarkable_doc_name: string; uploaded_at: string; last_seen_at: string | null; deleted_at: string | null }>(
-    "SELECT remarkable_doc_name, uploaded_at, last_seen_at, deleted_at FROM brief_engagement ORDER BY uploaded_at DESC LIMIT 1",
-  );
-  const row = rows[0];
-  if (!row) return undefined;
-  const stillOnDevice = !row.deleted_at;
-  const endTime = row.deleted_at ?? row.last_seen_at ?? row.uploaded_at;
-  const retentionMs = new Date(endTime).getTime() - new Date(row.uploaded_at).getTime();
-  return {
-    briefName: row.remarkable_doc_name, uploadedAt: row.uploaded_at, stillOnDevice,
-    deletedAt: row.deleted_at ?? undefined, lastSeenAt: row.last_seen_at ?? undefined,
-    retentionHours: retentionMs > 0 ? Math.round(retentionMs / 3_600_000 * 10) / 10 : undefined,
-  };
-}
-
-// ── Gemini ──────────────────────────────────────────────────────────
-
-function buildGeminiPrompt(
-  items: IngestedItem[], weather: WeatherSnapshot, dateLabel: string,
-  previousOverview?: string,
-  conflicts?: CalendarConflict[], engagement?: EngagementSummary,
-  operatorContext?: string,
-  headlines?: NewsHeadline[],
-): string {
-  const compact = items.map(item => {
-    const meta = safeParseMetadata(item);
-    if (item.source_type === "calendar" && meta.startAt && meta.endAt) {
-      return { id: item.id, type: item.source_type, title: item.title, text: `${formatPacificTime(meta.startAt)} - ${formatPacificTime(meta.endAt)} (${meta.calendarName ?? "Calendar"}) ${item.title}\n${item.summary_input}`, metadata: { ...meta, startAtPacific: formatPacificTime(meta.startAt), endAtPacific: formatPacificTime(meta.endAt) }, createdAt: item.created_at };
-    }
-    return { id: item.id, type: item.source_type, title: item.title, text: item.summary_input, metadata: meta, createdAt: item.created_at };
-  });
-
-  const lines = [
-    "You are generating a fixed-format daily brief.",
-    `Date: ${dateLabel}`, `Timezone: Pacific Time (America/Los_Angeles)`,
-    `Weather: high ${weather.highF.toFixed(0)}F, low ${weather.lowF.toFixed(0)}F, code ${weather.weatherCode}`,
-    "Return JSON matching the schema exactly.",
-    "Guidance:",
-    "- overview: concise executive summary covering key meetings, tasks, and priorities",
-    "- overview: first sentence must describe weather with daily high/low and condition",
-    "- deltaSinceYesterday: summarize what changed since yesterday",
-    "- use the full content of emails and calendar events",
-    "- focus on key dependencies and communication risk",
-    "- all times shown are already in Pacific Time",
-    "- overview: if top headlines are provided below, include a brief 'In the News' closing sentence summarizing the key stories",
-    "- overview: the user is especially interested in major US news, international news, science, technology, business, and Seattle sports (Seahawks, Mariners, Kraken, Sounders, Storm) — prioritize those topics when selecting which headlines to highlight.",
-  ];
-  if (operatorContext) lines.push("", "Operator guidance:", operatorContext);
-  if (previousOverview) lines.push("", "Yesterday's overview:", previousOverview);
-  if (conflicts?.length) { lines.push("", "⚠ Calendar conflicts:"); for (const c of conflicts) lines.push(`- "${c.eventA}" and "${c.eventB}" overlap by ${c.overlapMinutes}min`); }
-  if (engagement) {
-    const s = engagement.stillOnDevice ? `still on device (${engagement.retentionHours ?? "?"}h)` : `removed after ${engagement.retentionHours ?? "?"}h`;
-    lines.push("", `📊 Previous brief: "${engagement.briefName}" ${s}.`);
-    if (!engagement.stillOnDevice && engagement.retentionHours !== undefined && engagement.retentionHours < 1) lines.push("  Deleted quickly — be more concise.");
-  }
-  if (headlines?.length) {
-    lines.push("", "Top headlines (MUST include a 1\u20132 sentence 'In the News' summary of these in the overview):");
-    for (const h of headlines) lines.push(`- ${h.title}${h.source ? ` (${h.source})` : ""}`);
-  }
-  lines.push("", "Input items:", JSON.stringify(compact));
-  return lines.join("\n");
 }
 
 function extractJsonObject(text: string): string {
@@ -409,7 +223,14 @@ async function summarizeWithGemini(
   headlines?: NewsHeadline[],
 ) {
   if (!GEMINI_API_KEY) throw new Error("Missing GEMINI_API_KEY env var");
-  const prompt = buildGeminiPrompt(items, weather, dateLabel, previousOverview, conflicts, engagement, operatorContext, headlines);
+  const compact = items.map(item => {
+    const meta = safeParseMetadata(item);
+    if (item.source_type === "calendar" && meta.startAt && meta.endAt) {
+      return { id: item.id, type: item.source_type, title: item.title, text: `${formatPacificTime(meta.startAt as string)} - ${formatPacificTime(meta.endAt as string)} (${(meta.calendarName as string) ?? "Calendar"}) ${item.title}\n${item.summary_input}`, metadata: { ...meta, startAtPacific: formatPacificTime(meta.startAt as string), endAtPacific: formatPacificTime(meta.endAt as string) }, createdAt: item.created_at };
+    }
+    return { id: item.id, type: item.source_type, title: item.title, text: item.summary_input, metadata: meta, createdAt: item.created_at };
+  });
+  const prompt = buildGeminiPrompt(compact, weather, dateLabel, previousOverview, conflicts, engagement, operatorContext, headlines);
 
   console.log("  Calling Gemini...");
   const res = await fetch(
@@ -430,33 +251,38 @@ async function summarizeWithGemini(
   return reportOutputSchema.parse(JSON.parse(extractJsonObject(text)));
 }
 
-// ── Main ────────────────────────────────────────────────────────────
+// ── CLI Argument Parsing ────────────────────────────────────────────
 
-async function main(): Promise<void> {
-  console.log("📋 Live preview — pulling data via wrangler CLI\n");
-
-  // Resolve cursor
-  let cursorOverride: string | undefined;
+function resolveCursorFromArgs(): string {
   if (args.since) {
     const d = new Date(args.since);
-    if (Number.isNaN(d.getTime())) { console.error("Invalid --since value"); process.exit(1); }
-    cursorOverride = d.toISOString();
-  } else {
-    const hours = Number.parseInt(args.hours!, 10);
-    if (!Number.isFinite(hours) || hours <= 0) { console.error("--hours must be a positive integer"); process.exit(1); }
-    cursorOverride = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
+    if (Number.isNaN(d.getTime())) {
+      console.error("Invalid --since value");
+      process.exit(1);
+    }
+    return d.toISOString();
   }
 
-  // 1. Fetch items from D1
-  console.log("① Fetching items from D1...");
+  const hours = Number.parseInt(args.hours!, 10);
+  if (!Number.isFinite(hours) || hours <= 0) {
+    console.error("--hours must be a positive integer");
+    process.exit(1);
+  }
+  return new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
+}
+
+// ── Data Assembly ───────────────────────────────────────────────────
+
+async function fetchAllReportData(cursorOverride: string, now: Date) {
   const { items, cursor } = getItemsSinceLastRun(cursorOverride);
   const filtered = filterItemsForBrief(items);
   console.log(`  ${items.length} raw → ${filtered.length} after filtering (cursor: ${cursor})`);
-  if (filtered.length === 0) { console.error("No items found. Try --hours 48 or --since <date>."); process.exit(1); }
 
-  // 2. Parallel fetches: weather, previous data, daily office
-  console.log("② Fetching weather, previous brief, daily office...");
-  const now = new Date();
+  if (filtered.length === 0) {
+    console.error("No items found. Try --hours 48 or --since <date>.");
+    process.exit(1);
+  }
+
   const dateLabel = formatDatePacific(now);
   const pp = getPacificParts(now);
   const pacificDate = new Date(pp.year, pp.month - 1, pp.day);
@@ -466,62 +292,115 @@ async function main(): Promise<void> {
     fetchDailyOffice(makeNullKV(), pacificDate).catch(() => undefined),
     fetchTopHeadlines(NEWS_API),
   ]);
-  const previousOverview = getPreviousOverview();
-  const previousEngagement = getPreviousEngagement();
+
+  const previousOverview = getPreviousOverview(d1Query);
+  const previousEngagement = getPreviousEngagement(d1Query);
   const operatorContext = kvGet("operator_context");
 
-  console.log(`  Weather: H ${weather.highF.toFixed(0)}° / L ${weather.lowF.toFixed(0)}°, code ${weather.weatherCode}`);
-  console.log(`  Headlines: ${headlines.length}`);
-  console.log(`  Daily Office: ${dailyOffice ? `${dailyOffice.season} ${dailyOffice.week} ${dailyOffice.day}` : "unavailable"}`);
-
-  // 3. Build structured data
-  const agendaEvents = buildCalendarAgenda(filtered, now);
-  const conflicts = detectCalendarConflicts(agendaEvents);
-  const todos = buildGoogleTaskTodos(filtered);
-  const noteLines = buildNoteLines(filtered);
-  console.log(`  ${agendaEvents.length} calendar events, ${todos.length} todos, ${noteLines.length} notes`);
-
-  // 4. Gemini summary
-  console.log("③ Generating summary with Gemini...");
-  const llm = await summarizeWithGemini(
-    filtered, weather, dateLabel,
-    previousOverview, conflicts,
-    previousEngagement, operatorContext ?? undefined, headlines,
-  );
-
-  // 5. Render HTML
-  console.log("④ Rendering HTML...");
-  const data: TemplateData = {
-    dateLabel, weather,
-    overview: llm.overview,
-    deltaSinceYesterday: llm.deltaSinceYesterday,
-    agendaEvents, todos, noteLines,
-    dailyOffice: dailyOffice ?? undefined,
+  return {
+    items: filtered,
+    cursor,
+    dateLabel,
+    now,
+    weather,
+    dailyOffice,
+    headlines,
+    previousOverview,
+    previousEngagement,
+    operatorContext: operatorContext ?? undefined,
   };
-  const html = renderHtml(data);
+}
 
+function buildStructuredData(items: IngestedItem[], now: Date) {
+  const agendaEvents = buildCalendarAgenda(items, now);
+  const conflicts = detectCalendarConflicts(agendaEvents);
+  const todos = buildGoogleTaskTodos(items);
+  const noteLines = buildNoteLines(items);
+
+  return { agendaEvents, conflicts, todos, noteLines };
+}
+
+async function renderAndSaveReport(
+  data: TemplateData,
+  skipPdf: boolean
+): Promise<{ htmlPath: string; pdfPath?: string }> {
+  const html = renderHtml(data);
   const outDir = join(ROOT, "output");
   await mkdir(outDir, { recursive: true });
   const htmlPath = join(outDir, "report-preview.html");
   await writeFile(htmlPath, html, "utf-8");
   console.log(`  HTML → ${htmlPath}`);
 
-  // 6. Optional PDF
-  if (!args["no-pdf"]) {
-    console.log("⑤ Printing PDF...");
-    const puppeteer = await import("puppeteer");
-    const browser = await puppeteer.default.launch({ headless: true });
-    try {
-      const page = await browser.newPage();
-      await page.setContent(html, { waitUntil: "networkidle0" });
-      const pdfBytes = await page.pdf({ format: "Letter", printBackground: true });
-      const pdfPath = join(outDir, "report-preview.pdf");
-      await writeFile(pdfPath, pdfBytes);
-      console.log(`  PDF  → ${pdfPath}`);
-    } finally {
-      await browser.close();
-    }
+  if (skipPdf) {
+    return { htmlPath };
   }
+
+  console.log("⑤ Printing PDF...");
+  const puppeteer = await import("puppeteer");
+  const browser = await puppeteer.default.launch({ headless: true });
+  try {
+    const page = await browser.newPage();
+    await page.setContent(html, { waitUntil: "networkidle0" });
+    const pdfBytes = await page.pdf({ format: "Letter", printBackground: true });
+    const pdfPath = join(outDir, "report-preview.pdf");
+    await writeFile(pdfPath, pdfBytes);
+    console.log(`  PDF  → ${pdfPath}`);
+    return { htmlPath, pdfPath };
+  } finally {
+    await browser.close();
+  }
+}
+
+// ── Main ────────────────────────────────────────────────────────────
+
+async function main(): Promise<void> {
+  console.log("📋 Live preview — pulling data via wrangler CLI\n");
+
+  // Resolve cursor
+  console.log("① Fetching items from D1...");
+  const cursorOverride = resolveCursorFromArgs();
+
+  // Fetch all data
+  console.log("② Fetching weather, previous brief, daily office...");
+  const now = new Date();
+  const reportData = await fetchAllReportData(cursorOverride, now);
+
+  console.log(`  Weather: H ${reportData.weather.highF.toFixed(0)}° / L ${reportData.weather.lowF.toFixed(0)}°, code ${reportData.weather.weatherCode}`);
+  console.log(`  Headlines: ${reportData.headlines.length}`);
+  console.log(`  Daily Office: ${reportData.dailyOffice ? `${reportData.dailyOffice.season} ${reportData.dailyOffice.week} ${reportData.dailyOffice.day}` : "unavailable"}`);
+
+  // Build structured data
+  console.log("③ Building structured data...");
+  const structured = buildStructuredData(reportData.items, now);
+  console.log(`  ${structured.agendaEvents.length} calendar events, ${structured.todos.length} todos, ${structured.noteLines.length} notes`);
+
+  // Generate summary
+  console.log("④ Generating summary with Gemini...");
+  const llm = await summarizeWithGemini(
+    reportData.items,
+    reportData.weather,
+    reportData.dateLabel,
+    reportData.previousOverview,
+    structured.conflicts,
+    reportData.previousEngagement,
+    reportData.operatorContext,
+    reportData.headlines,
+  );
+
+  // Render and save
+  const templateData: TemplateData = {
+    dateLabel: reportData.dateLabel,
+    weather: reportData.weather,
+    overview: llm.overview,
+    deltaSinceYesterday: llm.deltaSinceYesterday,
+    agendaEvents: structured.agendaEvents,
+    todos: structured.todos,
+    noteLines: structured.noteLines,
+    dailyOffice: reportData.dailyOffice ?? undefined,
+  };
+
+  console.log("⑤ Rendering and saving report...");
+  await renderAndSaveReport(templateData, args["no-pdf"] === true);
 
   console.log("\n✅ Done.");
 }

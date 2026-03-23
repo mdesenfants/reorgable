@@ -2,6 +2,19 @@
 // Combines readings from reubenlillie/daily-office with scripture text
 // from bible-api.com (World English Bible, public domain).
 
+import {
+  buildLiturgicalContext,
+  checkAdvent,
+  checkChristmas,
+  checkEpiphanyFixed,
+  checkEpiphanyWeeks,
+  checkLent,
+  checkEaster,
+  checkAfterPentecost,
+  computeAdvent1,
+  type LiturgicalPosition,
+} from "./liturgy-helpers.js";
+
 export interface DailyOfficeLesson {
   reference: string;
   text?: string;
@@ -67,67 +80,7 @@ function mergeDeduplicatedStudy(morning: DailyOfficeSection, evening: DailyOffic
   return { psalms, lessons };
 }
 
-// ── Liturgical Calendar ──────────────────────────────────────────────
-
-/** Compute Easter Sunday using the Anonymous Gregorian algorithm. */
-function computeEaster(year: number): Date {
-  const a = year % 19;
-  const b = Math.floor(year / 100);
-  const c = year % 100;
-  const d = Math.floor(b / 4);
-  const e = b % 4;
-  const f = Math.floor((b + 8) / 25);
-  const g = Math.floor((b - f + 1) / 3);
-  const h = (19 * a + b - d - g + 15) % 30;
-  const i = Math.floor(c / 4);
-  const k = c % 4;
-  const l = (32 + 2 * e + 2 * i - h - k) % 7;
-  const m = Math.floor((a + 11 * h + 22 * l) / 451);
-  const month = Math.floor((h + l - 7 * m + 114) / 31);
-  const day = ((h + l - 7 * m + 114) % 31) + 1;
-  return new Date(year, month - 1, day);
-}
-
-function addDays(date: Date, days: number): Date {
-  const r = new Date(date);
-  r.setDate(r.getDate() + days);
-  return r;
-}
-
-function daysBetween(a: Date, b: Date): number {
-  return Math.round((b.getTime() - a.getTime()) / 86_400_000);
-}
-
-function sameDay(a: Date, b: Date): boolean {
-  return (
-    a.getFullYear() === b.getFullYear() &&
-    a.getMonth() === b.getMonth() &&
-    a.getDate() === b.getDate()
-  );
-}
-
-function dayOfWeekName(date: Date): string {
-  return ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][date.getDay()];
-}
-
-function sundayOnOrBefore(date: Date): Date {
-  const d = new Date(date);
-  d.setDate(d.getDate() - d.getDay());
-  return d;
-}
-
-/** Advent 1 = 4th Sunday before December 25. */
-function computeAdvent1(year: number): Date {
-  const sundayBeforeChristmas = sundayOnOrBefore(new Date(year, 11, 24));
-  return addDays(sundayBeforeChristmas, -21);
-}
-
-interface LiturgicalPosition {
-  yearFile: 1 | 2;
-  season: string;
-  week: string;
-  day: string;
-}
+// Liturgical position and calendar functions are in ./liturgy-helpers.ts
 
 /** Resolve a civil date to its liturgical position in the daily office lectionary. */
 function resolveLiturgicalPosition(date: Date): LiturgicalPosition | undefined {
@@ -137,98 +90,29 @@ function resolveLiturgicalPosition(date: Date): LiturgicalPosition | undefined {
 
   const advent1ThisYear = computeAdvent1(year);
   const inNewAdvent = date >= advent1ThisYear;
+  const context = buildLiturgicalContext(date, year, inNewAdvent);
 
-  // The civil year containing Easter for this liturgical year
-  const easterYear = inNewAdvent ? year + 1 : year;
-  // Year One = Advent preceding odd years; Year Two = Advent preceding even years
-  const yearFile: 1 | 2 = easterYear % 2 === 1 ? 1 : 2;
+  // Try each liturgical season in order
+  let result = checkAdvent(date, context, advent1ThisYear);
+  if (result !== undefined) return result;
 
-  const easter = computeEaster(easterYear);
-  const ashWednesday = addDays(easter, -46);
-  const advent1Current = inNewAdvent ? advent1ThisYear : computeAdvent1(year - 1);
-  const advent1Next = inNewAdvent ? computeAdvent1(year + 1) : advent1ThisYear;
-  const dayName = dayOfWeekName(date);
+  result = checkChristmas(month, dom);
+  if (result !== undefined) return result;
 
-  // ── Advent (Advent 1 through Dec 24) ──
-  const adventYear = inNewAdvent ? year : year - 1;
-  const dec24 = new Date(adventYear, 11, 24);
-  if (date >= advent1Current && date <= dec24) {
-    const weeksElapsed = Math.floor(daysBetween(advent1Current, date) / 7);
-    return {
-      yearFile,
-      season: "Advent",
-      week: `Week of ${Math.min(weeksElapsed + 1, 4)} Advent`,
-      day: dayName,
-    };
-  }
+  result = checkEpiphanyFixed(month, dom, context);
+  if (result !== undefined) return result;
 
-  // ── Christmas (Dec 25 – Jan 5) — not in the year files ──
-  if (month === 11 && dom >= 25) return undefined;
-  if (month === 0 && dom <= 5) return undefined;
+  result = checkEpiphanyWeeks(date, context);
+  if (result !== undefined) return result;
 
-  // ── Epiphany fixed dates (Jan 6–12) ──
-  const MONTH_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-  if (month === 0 && dom >= 6 && dom <= 12) {
-    return { yearFile, season: "Epiphany", week: "Epiphany", day: `${MONTH_ABBR[month]} ${dom}` };
-  }
+  result = checkLent(date, context);
+  if (result !== undefined) return result;
 
-  // ── Epiphany weeks (after Jan 12 through day before Ash Wednesday) ──
-  if (date < ashWednesday) {
-    const jan6 = new Date(easterYear, 0, 6);
-    const week1Sun = jan6.getDay() === 0 ? addDays(jan6, 7) : addDays(jan6, 7 - jan6.getDay());
+  result = checkEaster(date, context);
+  if (result !== undefined) return result;
 
-    const lastEpiphanySun = sundayOnOrBefore(addDays(ashWednesday, -1));
-    if (date >= lastEpiphanySun) {
-      return { yearFile, season: "Epiphany", week: "Week of Last Epiphany", day: dayName };
-    }
-
-    const weekNum = Math.floor(daysBetween(week1Sun, date) / 7) + 1;
-    return { yearFile, season: "Epiphany", week: `Week of ${weekNum} Epiphany`, day: dayName };
-  }
-
-  // ── Lent (Ash Wednesday through day before Easter) ──
-  if (date >= ashWednesday && date < easter) {
-    const lent1Sun = addDays(ashWednesday, 4); // Next Sunday after Ash Wednesday
-    if (date < lent1Sun) {
-      return { yearFile, season: "Lent", week: "Ash Wednesday and Following", day: dayName };
-    }
-    const palmSunday = addDays(easter, -7);
-    if (date >= palmSunday) {
-      return { yearFile, season: "Lent", week: "Holy Week", day: dayName };
-    }
-    const lentWeek = Math.floor(daysBetween(lent1Sun, date) / 7) + 1;
-    return { yearFile, season: "Lent", week: `Week of ${lentWeek} Lent`, day: dayName };
-  }
-
-  // ── Easter (Easter through Easter+54, including Pentecost week) ──
-  const daysAfterEaster = daysBetween(easter, date);
-  if (daysAfterEaster >= 0 && daysAfterEaster <= 54) {
-    if (daysAfterEaster <= 6) {
-      return { yearFile, season: "Easter", week: "Easter Week", day: dayName };
-    }
-    if (daysAfterEaster >= 49) {
-      return { yearFile, season: "Easter", week: "Pentecost", day: dayName };
-    }
-    const easterWeek = Math.floor(daysAfterEaster / 7) + 1;
-    return { yearFile, season: "Easter", week: `Week of ${easterWeek} Easter`, day: dayName };
-  }
-
-  // ── Season after Pentecost (Easter+55 through day before next Advent 1) ──
-  if (date >= addDays(easter, 55) && date < advent1Next) {
-    if (sameDay(date, addDays(easter, 55))) {
-      return { yearFile, season: "The Season after Pentecost", week: "Eve of Trinity", day: "Saturday" };
-    }
-    if (sameDay(date, addDays(easter, 56))) {
-      return { yearFile, season: "The Season after Pentecost", week: "Trinity Sunday", day: "Sunday" };
-    }
-    // Proper number based on fixed date ranges (Proper 1 = May 8–14, etc.)
-    const may8 = new Date(easterYear, 4, 8);
-    const properNum = Math.floor(daysBetween(may8, date) / 7) + 1;
-    if (properNum >= 1 && properNum <= 29) {
-      return { yearFile, season: "The Season after Pentecost", week: `Proper ${properNum}`, day: dayName };
-    }
-    return undefined;
-  }
+  result = checkAfterPentecost(date, context);
+  if (result !== undefined) return result;
 
   return undefined;
 }

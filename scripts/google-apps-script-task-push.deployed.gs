@@ -1,5 +1,5 @@
 /**
- * Google Apps Script: push incomplete Google Tasks to reorgable ingest worker.
+ * Google Apps Script: push Google Tasks state to reorgable ingest worker.
  *
  * Deployment-ready defaults for your current Cloudflare deployment.
  *
@@ -7,6 +7,7 @@
  * 1) In Apps Script, open Project Settings -> Script properties.
  * 2) Set INGEST_API_TOKEN to your ingest worker bearer token.
  * 3) Optional: set TASKLIST_ID (defaults to @default).
+ * 4) Optional: TASKS_UPDATED_CURSOR is maintained automatically for completed/deleted sync.
  *
  * Notes:
  * - INGEST_URL is pre-populated for your deployed ingest worker.
@@ -21,50 +22,109 @@ function pushTasksToReorgable() {
   var ingestUrl = props.getProperty('INGEST_URL') || DEFAULT_INGEST_URL;
   var apiToken = props.getProperty('INGEST_API_TOKEN');
   var tasklistId = props.getProperty('TASKLIST_ID') || DEFAULT_TASKLIST_ID;
+  var updatedCursor = props.getProperty('TASKS_UPDATED_CURSOR');
+  var runStartedAt = new Date().toISOString();
 
   if (!ingestUrl || !apiToken) {
     throw new Error('Missing INGEST_URL or INGEST_API_TOKEN in script properties');
   }
 
-  var tasks = Tasks.Tasks.list(tasklistId, {
+  pushOpenTasksToReorgable(ingestUrl, apiToken, tasklistId);
+  pushRecentlyClosedTasksToReorgable(ingestUrl, apiToken, tasklistId, updatedCursor);
+  props.setProperty('TASKS_UPDATED_CURSOR', runStartedAt);
+
+  pushTodayCalendarEventsToReorgable(ingestUrl, apiToken);
+}
+
+function listAllTasks(tasklistId, options) {
+  var collected = [];
+  var pageToken;
+
+  do {
+    var requestOptions = {};
+    for (var key in options) {
+      if (Object.prototype.hasOwnProperty.call(options, key)) {
+        requestOptions[key] = options[key];
+      }
+    }
+    if (pageToken) {
+      requestOptions.pageToken = pageToken;
+    }
+
+    var response = Tasks.Tasks.list(tasklistId, requestOptions);
+    var items = response.items || [];
+    for (var i = 0; i < items.length; i++) {
+      collected.push(items[i]);
+    }
+    pageToken = response.nextPageToken;
+  } while (pageToken);
+
+  return collected;
+}
+
+function pushTaskPayload(ingestUrl, apiToken, task, isDone) {
+  var emailContext = extractEmailContext(task.notes || '');
+  var payload = {
+    title: task.title || 'Untitled task',
+    details: task.notes || undefined,
+    dueAt: task.due ? new Date(task.due).toISOString() : undefined,
+    priority: 'medium',
+    tags: ['google-tasks'],
+    isDone: isDone,
+    relatedEmailSubject: emailContext.subject,
+    relatedEmailFrom: emailContext.from,
+    relatedEmailMessageId: emailContext.messageId,
+    externalId: task.id,
+    parentTaskId: task.parent || undefined
+  };
+
+  var response = UrlFetchApp.fetch(trimSlash(ingestUrl) + '/ingest/task', {
+    method: 'post',
+    contentType: 'application/json',
+    muteHttpExceptions: true,
+    headers: {
+      Authorization: 'Bearer ' + apiToken
+    },
+    payload: JSON.stringify(payload)
+  });
+
+  var code = response.getResponseCode();
+  if (code < 200 || code > 299) {
+    Logger.log('Failed task push for id=%s done=%s code=%s body=%s', task.id, isDone, code, response.getContentText());
+  }
+}
+
+function pushOpenTasksToReorgable(ingestUrl, apiToken, tasklistId) {
+  var items = listAllTasks(tasklistId, {
     showCompleted: false,
     showHidden: false,
     maxResults: 100
   });
 
-  var items = tasks.items || [];
   for (var i = 0; i < items.length; i++) {
-    var t = items[i];
-    var emailContext = extractEmailContext(t.notes || '');
-    var payload = {
-      title: t.title || 'Untitled task',
-      details: t.notes || undefined,
-      dueAt: t.due ? new Date(t.due).toISOString() : undefined,
-      priority: 'medium',
-      tags: ['google-tasks'],
-      relatedEmailSubject: emailContext.subject,
-      relatedEmailFrom: emailContext.from,
-      relatedEmailMessageId: emailContext.messageId,
-      externalId: t.id
-    };
+    pushTaskPayload(ingestUrl, apiToken, items[i], false);
+  }
+}
 
-    var response = UrlFetchApp.fetch(trimSlash(ingestUrl) + '/ingest/task', {
-      method: 'post',
-      contentType: 'application/json',
-      muteHttpExceptions: true,
-      headers: {
-        Authorization: 'Bearer ' + apiToken
-      },
-      payload: JSON.stringify(payload)
-    });
+function pushRecentlyClosedTasksToReorgable(ingestUrl, apiToken, tasklistId, updatedCursor) {
+  var options = {
+    showCompleted: true,
+    showDeleted: true,
+    showHidden: true,
+    maxResults: 100
+  };
 
-    var code = response.getResponseCode();
-    if (code < 200 || code > 299) {
-      Logger.log('Failed task push for id=%s code=%s body=%s', t.id, code, response.getContentText());
-    }
+  if (updatedCursor) {
+    options.updatedMin = updatedCursor;
   }
 
-  pushTodayCalendarEventsToReorgable(ingestUrl, apiToken);
+  var items = listAllTasks(tasklistId, options);
+  for (var i = 0; i < items.length; i++) {
+    var task = items[i];
+    var isDone = task.status === 'completed' || task.deleted === true;
+    if (!isDone) continue;
+    pushTaskPayload(ingestUrl, apiToken, task, true);
+  }
 }
 
 function trimSlash(value) {
