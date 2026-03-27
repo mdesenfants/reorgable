@@ -109,11 +109,10 @@ Here's what happens:
    - **Day View page**: a visual 6 AM–9 PM calendar with event blocks and hourly weather
    - **Daily Office page**: lectionary readings in a two-column layout, with Study heading, psalms, and lesson texts that flow across columns
    - **Notes page**: any captured notes plus ruled lines for handwriting
-9. **Render a reference appendix** — if there are emails or notes with longer bodies, a second PDF is generated with the full text of each item
-10. **Store in R2** — both PDFs are saved to the reports bucket
-11. **Upload to reMarkable** — the main brief and (if present) the reference doc are uploaded together to the `/Daily Briefings` folder on the tablet
-12. **Archive yesterday's brief** — the previous day's PDF is re-uploaded to `/Briefs` for history, then marked so it won't be archived again
-13. **Record the run** — D1 gets a `report_runs` row with the summary JSON, upload status, and reMarkable document ID; a `brief_engagement` row tracks the uploaded doc
+9. **Store in R2** — the PDF is saved to the reports bucket
+10. **Upload to reMarkable** — the brief is uploaded to the `/Daily Briefings` folder on the tablet
+11. **Archive yesterday's brief** — the previous day's PDF is re-uploaded to `/Briefs` for history, then marked so it won't be archived again
+12. **Record the run** — D1 gets a `report_runs` row with the summary JSON, upload status, and reMarkable document ID; a `brief_engagement` row tracks the uploaded doc
 
 ### 5:01 AM — it's on your tablet
 
@@ -124,8 +123,6 @@ Pick up your reMarkable. The daily brief is in `/Daily Briefings`. You get:
 - A checkbox list of open tasks you can tick off with the pen
 - Daily Office lectionary readings in a two-column layout
 - A notes page for meeting scribbles
-
-The reference appendix sits alongside it if you need the full text of an email thread or a longer note.
 
 ### During the day — the feedback loop
 
@@ -575,6 +572,7 @@ npm run preview
 ## Schedule and timing notes
 
 - Cron triggers fire at `12:00 UTC` (5 AM PDT) and `13:00 UTC` (5 AM PST) daily. Only one runs — the `shouldRunNow()` guard checks Pacific hour === 5 and skips the off-season trigger.
+- The worker also stores a per-day generation key in KV, so only one report is produced per Pacific calendar day even if `/run` is hit more than once.
 - This dual-cron approach means no manual cron changes are needed for DST transitions.
 - If no items were ingested since the last run, the worker skips generation unless `force=true`.
 
@@ -583,7 +581,7 @@ npm run preview
 The worker uses the open-source-compatible reMarkable cloud API (`/doc/v2/files`). This endpoint does not support folder placement directly, so the worker encodes folder intent in the filename:
 
 ```
-Daily Briefings - YYYY-MM-DD Daily Brief.pdf
+Daily Briefings - YYYY-MM-DD.pdf
 ```
 
 This makes reports easy to sort and find in the reMarkable file list.

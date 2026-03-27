@@ -1,10 +1,11 @@
 import puppeteer, { type BrowserWorker } from "@cloudflare/puppeteer";
 import type { DailyOfficeData } from "./daily-office";
+import type { RemarkableUploadResult } from "./remarkable/adapter";
 import { makeRemarkableAdapter } from "./remarkable/adapter-factory";
-import { renderHtml, renderReferenceHtml } from "./template";
+import { renderHtml } from "./template";
 import { fetchDailyOffice } from "./daily-office";
 import { fetchWeather, fetchTopHeadlines, getItemsSinceCursor, getOutstandingTasks, getItemsSinceLastRun } from "./fetchers";
-import { filterItemsForBrief, buildGoogleTaskTodos, buildNoteLines, buildReferenceItems } from "./tasks";
+import { filterItemsForBrief, buildGoogleTaskTodos, buildNoteLines } from "./tasks";
 import { buildCalendarAgenda, detectCalendarConflicts } from "./calendar";
 import { summarizeWithGemini } from "./gemini";
 import { getPreviousOverview, getPreviousEngagement, persistRun, recordEngagementTracking, checkBriefEngagement, FOLDERS } from "./persistent";
@@ -71,11 +72,15 @@ const formatDatePacific = (date: Date): string => {
   }).format(date);
 };
 
-const buildFileName = (date: Date): string => {
+const formatDateKeyPacific = (date: Date): string => {
   const parts = getPacificParts(date);
   const mm = String(parts.month).padStart(2, "0");
   const dd = String(parts.day).padStart(2, "0");
-  return `${parts.year}-${mm}-${dd} Daily Brief.pdf`;
+  return `${parts.year}-${mm}-${dd}`;
+};
+
+const buildFileName = (date: Date): string => {
+  return `${formatDateKeyPacific(date)}.pdf`;
 };
 
 async function htmlToPdf(env: Env, html: string): Promise<Uint8Array> {
@@ -124,8 +129,8 @@ async function uploadWithRetry(
   adapter: any,
   args: { fileName: string; folder: string; bytes: Uint8Array },
   maxAttempts = 3
-) {
-  let lastResult = { ok: false, message: "No attempt made" };
+): Promise<RemarkableUploadResult> {
+  let lastResult: RemarkableUploadResult = { ok: false, message: "No attempt made" };
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     lastResult = await adapter.uploadPdf(args);
     if (lastResult.ok) return lastResult;
@@ -207,6 +212,14 @@ async function runDailyReport(env: Env, opts?: { force?: boolean; lookbackHours?
     return { ok: true, skipped: true, reason: "Not 5 AM Pacific" };
   }
 
+  const reportDateKey = formatDateKeyPacific(now);
+  if (!opts?.force) {
+    const alreadyGenerated = await env.STATE_KV.get(`report_generated:${reportDateKey}`);
+    if (alreadyGenerated) {
+      return { ok: true, skipped: true, reason: `Report already generated for ${reportDateKey}` };
+    }
+  }
+
   let cursorOverride: string | undefined;
   if (opts?.since) {
     const parsed = new Date(opts.since);
@@ -259,61 +272,37 @@ async function runDailyReport(env: Env, opts?: { force?: boolean; lookbackHours?
     headlines
   );
 
-  const referenceItems = buildReferenceItems(items);
-  const refFileName = fileName.replace(".pdf", "-ref.pdf");
-
-  const [pdfBytes, refPdfBytes] = await Promise.all([
-    renderHtmlToPdf(env, {
-      dateLabel,
-      weather,
-      overview: llmSummary.overview,
-      deltaSinceYesterday: llmSummary.deltaSinceYesterday,
-      agendaEvents,
-      todos,
-      noteLines,
-      dailyOffice: dailyOffice ?? undefined,
-    }),
-    referenceItems.length > 0
-      ? htmlToPdf(env, renderReferenceHtml({ dateLabel, items: referenceItems }))
-      : Promise.resolve(null),
-  ]);
+  const pdfBytes = await renderHtmlToPdf(env, {
+    dateLabel,
+    weather,
+    overview: llmSummary.overview,
+    deltaSinceYesterday: llmSummary.deltaSinceYesterday,
+    agendaEvents,
+    todos,
+    noteLines,
+    dailyOffice: dailyOffice ?? undefined,
+  });
 
   const reportKey = `reports/${fileName}`;
   await env.REPORT_BUCKET.put(reportKey, pdfBytes, {
     httpMetadata: { contentType: "application/pdf" }
   });
-  if (refPdfBytes) {
-    await env.REPORT_BUCKET.put(`reports/${refFileName}`, refPdfBytes, {
-      httpMetadata: { contentType: "application/pdf" }
-    });
-  }
 
   const remarkable = makeRemarkableAdapter(env);
 
-  const uploadItems = [
-    { fileName, folder: FOLDERS.CURRENT_BRIEFS_FOLDER, bytes: pdfBytes },
-    ...(refPdfBytes ? [{ fileName: refFileName, folder: FOLDERS.CURRENT_BRIEFS_FOLDER, bytes: refPdfBytes }] : []),
-  ];
-
-  let multiResult: any;
-  let uploadResult: any;
-  const maxMultiAttempts = 3;
-
-  for (let attempt = 0; attempt < maxMultiAttempts; attempt++) {
-    multiResult = await remarkable.uploadMultiplePdfs(uploadItems);
-    uploadResult = multiResult.results[0];
-    if (uploadResult.ok) break;
-    if (attempt < maxMultiAttempts - 1) {
-      await new Promise((resolve) => setTimeout(resolve, 1000 * 2 ** attempt));
-    }
-  }
+  const uploadResult = await uploadWithRetry(remarkable, {
+    fileName,
+    folder: FOLDERS.CURRENT_BRIEFS_FOLDER,
+    bytes: pdfBytes,
+  });
 
   if (!uploadResult!.ok) {
     const deadLetterKey = `dead-letter/report/${fileName}`;
     await env.STATE_KV.put(deadLetterKey, pdfBytes, { expirationTtl: 7 * 24 * 60 * 60 });
-    if (refPdfBytes) {
-      await env.STATE_KV.put(`dead-letter/report/${refFileName}`, refPdfBytes, { expirationTtl: 7 * 24 * 60 * 60 });
-    }
+  } else if (!opts?.force) {
+    await env.STATE_KV.put(`report_generated:${reportDateKey}`, now.toISOString(), {
+      expirationTtl: 8 * 24 * 60 * 60,
+    });
   }
 
   const archiveResult = await archivePreviousBrief(env, remarkable, now, fileName);
@@ -349,7 +338,7 @@ async function runDailyReport(env: Env, opts?: { force?: boolean; lookbackHours?
     sourceCount: filteredItems.length,
     reportKey,
     remarkable: uploadResult!,
-    referenceDoc: multiResult!.results[1] ?? null,
+    referenceDoc: null,
     archive: archiveResult,
   };
 }
