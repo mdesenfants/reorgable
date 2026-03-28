@@ -501,6 +501,7 @@ export function renderHtml(data: TemplateData): string {
     .office-columns {
       columns: 2;
       column-gap: 1.5em;
+      column-fill: auto;
     }
     .office-section { margin-bottom: 0.4em; break-inside: auto; }
     .office-section-title {
