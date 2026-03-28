@@ -14,7 +14,7 @@
  * - Script property values override defaults below.
  */
 
-var DEFAULT_INGEST_URL = 'https://reorgable-ingest.<your-subdomain>.workers.dev';
+var DEFAULT_INGEST_URL = 'https://reorgable-ingest.matt-desenfants.workers.dev';
 var DEFAULT_TASKLIST_ID = '@default';
 
 function pushTasksToReorgable() {
@@ -148,6 +148,35 @@ function extractEmailAddress(value) {
   return emailMatch ? String(emailMatch[0]).toLowerCase() : undefined;
 }
 
+function truncate(value, maxLen) {
+  if (!value) return '';
+  return value.length > maxLen ? value.substring(0, maxLen) : value;
+}
+
+function buildAttendeeList(event) {
+  try {
+    var guests = event.getGuestList(true);
+    if (!guests || guests.length === 0) return undefined;
+    var result = [];
+    for (var i = 0; i < guests.length; i++) {
+      result.push({ name: guests[i].getName() || '', email: guests[i].getEmail() || '' });
+    }
+    return result;
+  } catch (err) {
+    return undefined;
+  }
+}
+
+function buildOrganizer(event) {
+  try {
+    var creators = event.getCreators();
+    if (!creators || creators.length === 0) return undefined;
+    return { name: '', email: creators[0] };
+  } catch (err) {
+    return undefined;
+  }
+}
+
 function pushTodayCalendarEventsToReorgable(ingestUrl, apiToken) {
   var calendars = CalendarApp.getAllCalendars();
   var now = new Date();
@@ -166,7 +195,11 @@ function pushTodayCalendarEventsToReorgable(ingestUrl, apiToken) {
         endAt: event.getEndTime().toISOString(),
         calendarName: cal.getName() || 'Calendar',
         isAllDay: event.isAllDayEvent(),
-        externalId: cal.getId() + ':' + event.getId() + ':' + event.getStartTime().getTime()
+        externalId: cal.getId() + ':' + event.getId() + ':' + event.getStartTime().getTime(),
+        location: event.getLocation() || undefined,
+        bodyPreview: truncate(event.getDescription(), 500) || undefined,
+        attendees: buildAttendeeList(event),
+        organizer: buildOrganizer(event)
       };
 
       var response = UrlFetchApp.fetch(trimSlash(ingestUrl) + '/ingest/calendar', {

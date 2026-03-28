@@ -52,7 +52,11 @@ export const calendarIngestSchema = z.object({
   endAt: z.string().datetime(),
   calendarName: z.string().min(1),
   isAllDay: z.boolean().default(false),
-  externalId: z.string().optional()
+  externalId: z.string().optional(),
+  location: z.string().optional(),
+  bodyPreview: z.string().optional(),
+  attendees: z.array(z.object({ name: z.string(), email: z.string() })).optional(),
+  organizer: z.object({ name: z.string(), email: z.string() }).optional(),
 });
 
 export const storedItemPayloadSchema = z.object({

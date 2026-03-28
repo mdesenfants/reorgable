@@ -25,6 +25,10 @@ export interface CalendarEvent {
   end: { dateTime: string; timeZone: string };
   isAllDay: boolean;
   calendar?: { name: string };
+  location?: { displayName?: string };
+  bodyPreview?: string;
+  attendees?: Array<{ emailAddress: { name?: string; address?: string }; type?: string }>;
+  organizer?: { emailAddress: { name?: string; address?: string } };
 }
 
 export interface IngestTaskPayload {
@@ -44,6 +48,10 @@ export interface IngestCalendarPayload {
   calendarName: string;
   isAllDay: boolean;
   externalId: string;
+  location?: string;
+  bodyPreview?: string;
+  attendees?: Array<{ name: string; email: string }>;
+  organizer?: { name: string; email: string };
 }
 
 export function mapImportance(importance: TodoTask["importance"]): "low" | "medium" | "high" {
@@ -87,6 +95,13 @@ export function buildTaskPayload(task: TodoTask, tag: string): IngestTaskPayload
 }
 
 export function buildCalendarPayload(event: CalendarEvent): IngestCalendarPayload {
+  const attendees = event.attendees
+    ?.map((a) => ({ name: a.emailAddress.name ?? "", email: a.emailAddress.address ?? "" }))
+    .filter((a) => a.email);
+  const organizer = event.organizer?.emailAddress.address
+    ? { name: event.organizer.emailAddress.name ?? "", email: event.organizer.emailAddress.address }
+    : undefined;
+
   return {
     title: event.subject || "Untitled event",
     startAt: toUtcIso(event.start.dateTime, event.start.timeZone),
@@ -94,5 +109,9 @@ export function buildCalendarPayload(event: CalendarEvent): IngestCalendarPayloa
     calendarName: event.calendar?.name ?? "Calendar",
     isAllDay: event.isAllDay,
     externalId: event.id,
+    location: event.location?.displayName || undefined,
+    bodyPreview: event.bodyPreview || undefined,
+    attendees: attendees?.length ? attendees : undefined,
+    organizer,
   };
 }

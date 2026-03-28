@@ -29,7 +29,7 @@ import { parseArgs } from "node:util";
 import { renderHtml, type TemplateData } from "../workers/report-worker/src/template.js";
 import { fetchDailyOffice, type DailyOfficeData } from "../workers/report-worker/src/daily-office.js";
 import { reportOutputSchema, reportOutputJsonSchema } from "../packages/shared/src/report-schema.js";
-import { buildGeminiPrompt, type CalendarConflict, type EngagementSummary } from "./gemini-prompt.js";
+import { buildGeminiPrompt, type CalendarConflict, type EngagementSummary, type InboxEmailSummaryItem, type EntityEntry } from "./gemini-prompt.js";
 import { fetchWeather } from "./weather-helper.js";
 import { fetchTopHeadlines, type NewsHeadline } from "./news-helper.js";
 import { getPreviousOverview, getPreviousEngagement } from "./data-retrieval-helpers.js";
@@ -115,12 +115,6 @@ function makeNullKV(): PreviewKVNamespace {
 
 import type { WeatherSnapshot } from "@reorgable/shared";
 
-type NewsHeadline = {
-  title: string;
-  source?: string;
-  publishedAt?: string;
-};
-
 type CalendarEvent = {
   title: string;
   startAt: string;
@@ -128,17 +122,7 @@ type CalendarEvent = {
   startLabel: string;
   endLabel: string;
   calendarName: string;
-};
-
-type CalendarConflict = { eventA: string; eventB: string; overlapMinutes: number };
-
-type EngagementSummary = {
-  briefName: string;
-  uploadedAt: string;
-  stillOnDevice: boolean;
-  deletedAt?: string;
-  lastSeenAt?: string;
-  retentionHours?: number;
+  location?: string;
 };
 
 // ── Pure functions (same logic as worker) ───────────────────────────
@@ -169,7 +153,7 @@ function buildCalendarAgenda(items: IngestedItem[], now: Date): CalendarEvent[] 
   const todayKey = toPacificDateKey(now.toISOString());
   return items
     .filter(i => i.source_type === "calendar")
-    .map(i => { const m = safeParseMetadata(i); return m.startAt && m.endAt ? { title: i.title, startAt: m.startAt, endAt: m.endAt, calendarName: m.calendarName ?? "Calendar" } : null; })
+    .map(i => { const m = safeParseMetadata(i); return m.startAt && m.endAt ? { title: i.title, startAt: m.startAt, endAt: m.endAt, calendarName: m.calendarName ?? "Calendar", location: typeof (m as Record<string, unknown>).location === "string" ? (m as Record<string, unknown>).location as string : undefined } : null; })
     .filter((v): v is NonNullable<typeof v> => !!v)
     .filter(e => toPacificDateKey(e.startAt) === todayKey)
     .sort((a, b) => a.startAt.localeCompare(b.startAt))
@@ -186,6 +170,26 @@ function detectCalendarConflicts(events: CalendarEvent[]): CalendarConflict[] {
     if (os < oe) out.push({ eventA: events[i].title, eventB: events[j].title, overlapMinutes: Math.round((oe - os) / 60_000) });
   }
   return out;
+}
+
+function buildInboxSummary(items: IngestedItem[]): InboxEmailSummaryItem[] {
+  const tasks = items.filter(i => i.source_type === "task");
+  const openTasks = tasks.filter(i => safeParseMetadata(i).isDone !== true);
+  const inboxEmails = items.filter(i => {
+    if (i.source_type !== "email") return false;
+    return safeParseMetadata(i).inInbox === true;
+  });
+  return inboxEmails.map(email => {
+    const meta = safeParseMetadata(email);
+    const linked = openTasks.some(task => emailIsLinkedToTask(task, email));
+    return {
+      from: (meta.from as string) ?? "unknown",
+      subject: email.title,
+      preview: email.summary_input.slice(0, 300),
+      sentAt: (meta.sentAt as string) ?? undefined,
+      isLinkedToTask: linked,
+    };
+  });
 }
 
 // ── Data fetchers ───────────────────────────────────────────────────
@@ -221,6 +225,8 @@ async function summarizeWithGemini(
   conflicts?: CalendarConflict[], engagement?: EngagementSummary,
   operatorContext?: string,
   headlines?: NewsHeadline[],
+  inboxEmails?: InboxEmailSummaryItem[],
+  entityDictionary?: EntityEntry[],
 ) {
   if (!GEMINI_API_KEY) throw new Error("Missing GEMINI_API_KEY env var");
   const compact = items.map(item => {
@@ -230,7 +236,7 @@ async function summarizeWithGemini(
     }
     return { id: item.id, type: item.source_type, title: item.title, text: item.summary_input, metadata: meta, createdAt: item.created_at };
   });
-  const prompt = buildGeminiPrompt(compact, weather, dateLabel, previousOverview, conflicts, engagement, operatorContext, headlines);
+  const prompt = buildGeminiPrompt(compact, weather, dateLabel, previousOverview, conflicts, engagement, operatorContext, headlines, inboxEmails, entityDictionary);
 
   console.log("  Calling Gemini...");
   const res = await fetch(
@@ -296,9 +302,15 @@ async function fetchAllReportData(cursorOverride: string, now: Date) {
   const previousOverview = getPreviousOverview(d1Query);
   const previousEngagement = getPreviousEngagement(d1Query);
   const operatorContext = kvGet("operator_context");
+  const entityDictionaryRaw = kvGet("entity_dictionary");
+  let entityDictionary: EntityEntry[] | undefined;
+  if (entityDictionaryRaw) {
+    try { entityDictionary = JSON.parse(entityDictionaryRaw) as EntityEntry[]; } catch { /* ignore */ }
+  }
 
   return {
     items: filtered,
+    allItems: items,
     cursor,
     dateLabel,
     now,
@@ -308,6 +320,7 @@ async function fetchAllReportData(cursorOverride: string, now: Date) {
     previousOverview,
     previousEngagement,
     operatorContext: operatorContext ?? undefined,
+    entityDictionary,
   };
 }
 
@@ -374,6 +387,10 @@ async function main(): Promise<void> {
   const structured = buildStructuredData(reportData.items, now);
   console.log(`  ${structured.agendaEvents.length} calendar events, ${structured.todos.length} todos, ${structured.noteLines.length} notes`);
 
+  // Build inbox summary
+  const inboxEmails = buildInboxSummary(reportData.allItems);
+  if (inboxEmails.length > 0) console.log(`  ${inboxEmails.length} inbox emails`);
+
   // Generate summary
   console.log("④ Generating summary with Gemini...");
   const llm = await summarizeWithGemini(
@@ -385,6 +402,8 @@ async function main(): Promise<void> {
     reportData.previousEngagement,
     reportData.operatorContext,
     reportData.headlines,
+    inboxEmails.length > 0 ? inboxEmails : undefined,
+    reportData.entityDictionary,
   );
 
   // Render and save
@@ -397,6 +416,7 @@ async function main(): Promise<void> {
     todos: structured.todos,
     noteLines: structured.noteLines,
     dailyOffice: reportData.dailyOffice ?? undefined,
+    inboxSummary: llm.inboxSummary ?? undefined,
   };
 
   console.log("⑤ Rendering and saving report...");

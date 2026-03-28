@@ -98,15 +98,24 @@ export function checkAdvent(date: Date, context: LiturgicalContext, advent1ThisY
   return undefined;
 }
 
-export function checkChristmas(month: number, dom: number): undefined {
-  if ((month === 11 && dom >= 25) || (month === 0 && dom <= 5)) return undefined;
+export function checkChristmas(month: number, dom: number, context: LiturgicalContext): LiturgicalPosition | undefined {
+  const MONTH_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  // Dec 25–31 or Jan 1–5
+  if ((month === 11 && dom >= 25) || (month === 0 && dom <= 5)) {
+    return {
+      yearFile: context.yearFile,
+      season: "Christmas",
+      week: "Christmas Day and Following",
+      day: `${MONTH_ABBR[month]} ${dom}`,
+    };
+  }
   return undefined;
 }
 
 export function checkEpiphanyFixed(month: number, dom: number, context: LiturgicalContext): LiturgicalPosition | undefined {
   const MONTH_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
   if (month === 0 && dom >= 6 && dom <= 12) {
-    return { yearFile: context.yearFile, season: "Epiphany", week: "Epiphany", day: `${MONTH_ABBR[month]} ${dom}` };
+    return { yearFile: context.yearFile, season: "Epiphany", week: "The Epiphany and Following", day: `${MONTH_ABBR[month]} ${dom}` };
   }
   return undefined;
 }

@@ -7,6 +7,7 @@ type CalendarEvent = {
   startLabel: string;
   endLabel: string;
   calendarName: string;
+  location?: string;
 };
 
 type CalendarConflict = {
@@ -80,13 +81,14 @@ export function buildCalendarAgenda(items: IngestedItem[], now: Date): CalendarE
         title: item.title,
         startAt,
         endAt,
-        calendarName: (m.calendarName as string) ?? "Calendar"
+        calendarName: (m.calendarName as string) ?? "Calendar",
+        location: (m.location as string) || undefined,
       };
     })
-    .filter((v): v is { title: string; startAt: string; endAt: string; calendarName: string } => !!v)
+    .filter((v): v is NonNullable<typeof v> => !!v)
     .filter((event) => toPacificDateKey(event.startAt) === todayKey);
 
-  const dedupedEvents = new Map<string, { title: string; startAt: string; endAt: string; calendarName: string }>();
+  const dedupedEvents = new Map<string, typeof events[number]>();
   for (const event of events) {
     const key = `${normalizeForMatch(event.title)}|${new Date(event.startAt).getTime()}|${new Date(event.endAt).getTime()}`;
     const existing = dedupedEvents.get(key);
@@ -105,7 +107,7 @@ export function buildCalendarAgenda(items: IngestedItem[], now: Date): CalendarE
     .map((event) => ({
       ...event,
       startLabel: formatPacificTime(event.startAt),
-      endLabel: formatPacificTime(event.endAt)
+      endLabel: formatPacificTime(event.endAt),
     }));
 }
 

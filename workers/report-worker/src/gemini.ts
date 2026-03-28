@@ -3,6 +3,8 @@ import type { IngestedItem } from "./fetchers";
 import type { CalendarConflict } from "./calendar";
 import { formatPacificTime, describeWeather } from "./calendar";
 
+import type { InboxEmailSummaryItem } from "./tasks";
+
 type NewsHeadline = {
   title: string;
   source?: string;
@@ -44,18 +46,32 @@ export function buildGeminiPrompt(
   conflicts?: CalendarConflict[],
   engagement?: EngagementSummary,
   operatorContext?: string,
-  headlines?: NewsHeadline[]
+  headlines?: NewsHeadline[],
+  inboxEmails?: InboxEmailSummaryItem[],
+  entityDictionary?: Array<{ name: string; type: string; definition: string }>,
 ): string {
   const compact = items.map((item) => {
     const meta = safeParseMetadata(item);
     if (item.source_type === "calendar" && meta.startAt && meta.endAt) {
       const startPT = formatPacificTime(meta.startAt as string);
       const endPT = formatPacificTime(meta.endAt as string);
+      const details: string[] = [];
+      if (meta.location) details.push(`Location: ${meta.location}`);
+      if (meta.bodyPreview) details.push(`Description: ${meta.bodyPreview}`);
+      if (Array.isArray(meta.attendees) && meta.attendees.length > 0) {
+        const names = (meta.attendees as Array<{ name: string; email: string }>).map((a) => a.name || a.email).join(", ");
+        details.push(`Attendees: ${names}`);
+      }
+      if (meta.organizer && typeof meta.organizer === "object") {
+        const org = meta.organizer as { name: string; email: string };
+        details.push(`Organizer: ${org.name || org.email}`);
+      }
+      const detailStr = details.length > 0 ? `\n${details.join("\n")}` : "";
       return {
         id: item.id,
         type: item.source_type,
         title: item.title,
-        text: `${startPT} - ${endPT} (${(meta.calendarName as string) ?? "Calendar"}) ${item.title}\n${item.summary_input}`,
+        text: `${startPT} - ${endPT} (${(meta.calendarName as string) ?? "Calendar"}) ${item.title}${detailStr}`,
         metadata: { ...meta, startAtPacific: startPT, endAtPacific: endPT },
         createdAt: item.created_at
       };
@@ -85,6 +101,7 @@ export function buildGeminiPrompt(
     "- all times shown are already in Pacific Time",
     "- overview: if top headlines are provided below, include a brief 'In the News' closing sentence.",
     "- overview: prioritize major US news, international news, science, technology, business, and Seattle sports.",
+    "- inboxSummary: if inbox emails are provided below, summarize traffic and highlight follow-ups not covered by tasks. Omit this field if no inbox emails are provided.",
   ];
 
   if (operatorContext) {
@@ -119,7 +136,22 @@ export function buildGeminiPrompt(
       lines.push(`- ${headline.title}${source}`);
     }
   }
+  if (entityDictionary?.length) {
+    lines.push("", "Known entities (use these definitions for context when interpreting items):");
+    for (const entity of entityDictionary) {
+      lines.push(`- ${entity.name} [${entity.type}]: ${entity.definition}`);
+    }
+  }
 
+  if (inboxEmails?.length) {
+    lines.push("", "Inbox emails (last 24 hours — summarize in inboxSummary, highlight items needing follow-up):");
+    for (const email of inboxEmails) {
+      const linked = email.isLinkedToTask ? " [linked to task]" : "";
+      const sent = email.sentAt ? ` sent ${email.sentAt}` : "";
+      lines.push(`- From: ${email.from}${sent} | Subject: ${email.subject}${linked}`);
+      if (email.preview) lines.push(`  Preview: ${email.preview}`);
+    }
+  }
   lines.push("", "Input items:", JSON.stringify(compact));
 
   return lines.join("\n");
@@ -134,14 +166,16 @@ export async function summarizeWithGemini(
   conflicts?: CalendarConflict[],
   engagement?: EngagementSummary,
   operatorContext?: string,
-  headlines?: NewsHeadline[]
+  headlines?: NewsHeadline[],
+  inboxEmails?: InboxEmailSummaryItem[],
+  entityDictionary?: Array<{ name: string; type: string; definition: string }>,
 ): Promise<ReportOutput> {
   if (!env.GEMINI_API_KEY) {
     throw new Error("Missing GEMINI_API_KEY");
   }
 
   const model = env.GEMINI_MODEL ?? "gemini-3-flash-preview";
-  const prompt = buildGeminiPrompt(items, weather, dateLabel, previousOverview, conflicts, engagement, operatorContext, headlines);
+  const prompt = buildGeminiPrompt(items, weather, dateLabel, previousOverview, conflicts, engagement, operatorContext, headlines, inboxEmails, entityDictionary);
 
   const response = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${env.GEMINI_API_KEY}`,

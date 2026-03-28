@@ -17,10 +17,12 @@ export interface TemplateData {
     startLabel: string;
     endLabel: string;
     calendarName: string;
+    location?: string;
   }>;
   todos: Array<{ task: string; done: boolean; isSubtask?: boolean; dueAt?: string }>;
   noteLines: string[];
   dailyOffice?: DailyOfficeData;
+  inboxSummary?: string;
 }
 
 /** Escape HTML special characters to prevent injection in rendered output. */
@@ -218,7 +220,7 @@ export function renderHtml(data: TemplateData): string {
   const agendaHtml = data.agendaEvents
     .map(
       (item, i) =>
-        `<li><span class="item-num">${i + 1}.</span><span><strong>${esc(item.startLabel)}-${esc(item.endLabel)}</strong> ${esc(item.title)} <em>(${esc(item.calendarName)})</em></span></li>`
+        `<li><span class="item-num">${i + 1}.</span><span><strong>${esc(item.startLabel)}-${esc(item.endLabel)}</strong> ${esc(item.title)}${item.location ? ` · ${esc(item.location)}` : ""} <em>(${esc(item.calendarName)})</em></span></li>`
     )
     .join("\n          ");
 
@@ -630,6 +632,12 @@ export function renderHtml(data: TemplateData): string {
         ${agendaHtml}
     </ol>
   </div>
+
+  ${data.inboxSummary ? `<!-- Inbox Summary -->
+  <div class="panel section-gap">
+    <div class="section-title">Inbox</div>
+    <p class="overview-text">${esc(data.inboxSummary)}</p>
+  </div>` : ""}
 
   <!-- Todos -->
   ${

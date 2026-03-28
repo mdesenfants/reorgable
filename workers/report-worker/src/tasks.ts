@@ -151,3 +151,33 @@ export function buildReferenceItems(items: IngestedItem[]): ReferenceItem[] {
 }
 
 export type { ItemMetadata, ReferenceItem };
+
+export interface InboxEmailSummaryItem {
+  from: string;
+  subject: string;
+  preview: string;
+  sentAt?: string;
+  isLinkedToTask: boolean;
+}
+
+export function buildInboxSummary(items: IngestedItem[]): InboxEmailSummaryItem[] {
+  const tasks = items.filter((item) => item.source_type === "task");
+  const openTasks = tasks.filter((item) => safeParseMetadata(item).isDone !== true);
+  const inboxEmails = items.filter((item) => {
+    if (item.source_type !== "email") return false;
+    const metadata = safeParseMetadata(item);
+    return metadata.inInbox === true;
+  });
+
+  return inboxEmails.map((email) => {
+    const meta = safeParseMetadata(email);
+    const linked = openTasks.some((task) => emailIsLinkedToTask(task, email));
+    return {
+      from: (meta.from as string) ?? "unknown",
+      subject: email.title,
+      preview: email.summary_input.slice(0, 300),
+      sentAt: (meta.sentAt as string) ?? undefined,
+      isLinkedToTask: linked,
+    };
+  });
+}

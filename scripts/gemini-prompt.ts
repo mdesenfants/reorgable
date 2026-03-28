@@ -53,6 +53,16 @@ function safeParseMetadata(metadata_json: string): Record<string, unknown> {
   }
 }
 
+export type InboxEmailSummaryItem = {
+  from: string;
+  subject: string;
+  preview: string;
+  sentAt?: string;
+  isLinkedToTask: boolean;
+};
+
+export type EntityEntry = { name: string; type: string; definition: string };
+
 export function buildGeminiPrompt(
   compact: Array<{ id: string; type: string; title: string; text: string; metadata: Record<string, unknown>; createdAt: string }>,
   weather: WeatherSnapshot,
@@ -61,7 +71,9 @@ export function buildGeminiPrompt(
   conflicts?: CalendarConflict[],
   engagement?: EngagementSummary,
   operatorContext?: string,
-  headlines?: NewsHeadline[]
+  headlines?: NewsHeadline[],
+  inboxEmails?: InboxEmailSummaryItem[],
+  entityDictionary?: EntityEntry[],
 ): string {
   const lines = [
     "You are generating a fixed-format daily brief.",
@@ -78,6 +90,7 @@ export function buildGeminiPrompt(
     "- all times shown are already in Pacific Time",
     "- overview: if top headlines are provided below, include a brief 'In the News' closing sentence.",
     "- overview: prioritize major US news, international news, science, technology, business, and Seattle sports.",
+    "- inboxSummary: if inbox emails are provided below, summarize traffic and highlight follow-ups not covered by tasks. Omit this field if no inbox emails are provided.",
   ];
 
   if (operatorContext) {
@@ -113,9 +126,26 @@ export function buildGeminiPrompt(
     }
   }
 
+  if (entityDictionary?.length) {
+    lines.push("", "Known entities (use these definitions for context when interpreting items):");
+    for (const entity of entityDictionary) {
+      lines.push(`- ${entity.name} [${entity.type}]: ${entity.definition}`);
+    }
+  }
+
+  if (inboxEmails?.length) {
+    lines.push("", "Inbox emails (last 24 hours — summarize in inboxSummary, highlight items needing follow-up):");
+    for (const email of inboxEmails) {
+      const linked = email.isLinkedToTask ? " [linked to task]" : "";
+      const sent = email.sentAt ? ` sent ${email.sentAt}` : "";
+      lines.push(`- From: ${email.from}${sent} | Subject: ${email.subject}${linked}`);
+      if (email.preview) lines.push(`  Preview: ${email.preview}`);
+    }
+  }
+
   lines.push("", "Input items:", JSON.stringify(compact));
 
   return lines.join("\n");
 }
 
-export type { NewsHeadline, CalendarConflict, EngagementSummary };
+export type { NewsHeadline, CalendarConflict, EngagementSummary, InboxEmailSummaryItem, EntityEntry };

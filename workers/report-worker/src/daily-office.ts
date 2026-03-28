@@ -96,7 +96,7 @@ function resolveLiturgicalPosition(date: Date): LiturgicalPosition | undefined {
   let result = checkAdvent(date, context, advent1ThisYear);
   if (result !== undefined) return result;
 
-  result = checkChristmas(month, dom);
+  result = checkChristmas(month, dom, context);
   if (result !== undefined) return result;
 
   result = checkEpiphanyFixed(month, dom, context);
@@ -167,7 +167,13 @@ function findEntry(data: ReadingEntry[], pos: LiturgicalPosition): ReadingEntry 
 function cleanReference(ref: string): string {
   // Normalize en-dashes/em-dashes to hyphens (lectionary JSON uses en-dashes)
   // and strip parenthetical optional sections: "Gen 1:1-10 (11-20)" → "Gen 1:1-10"
-  return ref.replace(/[\u2013\u2014]/g, "-").replace(/\s*\(.*?\)\s*/g, "").trim();
+  let cleaned = ref.replace(/[\u2013\u2014]/g, "-").replace(/\s*\(.*?\)\s*/g, "").trim();
+  // Handle comma-separated ranges: keep only the first range
+  // e.g. "Isa 5:8-12, 18-23" → "Isa 5:8-12"
+  if (cleaned.includes(",")) {
+    cleaned = cleaned.split(",")[0].trim();
+  }
+  return cleaned;
 }
 
 async function fetchScriptureText(kv: KVNamespace, reference: string): Promise<string | undefined> {
@@ -254,7 +260,9 @@ export async function fetchDailyOffice(
   // Fetch psalm text in parallel
   const psalmLessons: DailyOfficeLesson[] = await Promise.all(
     merged.psalms.map(async (num) => {
-      const reference = `Psalm ${num}`;
+      // Strip brackets from optional psalms (e.g., "[59]" → "59")
+      const cleanNum = num.replace(/\[|\]/g, "").trim();
+      const reference = `Psalm ${cleanNum}`;
       const text = await fetchScriptureText(kv, reference);
       return { reference, text };
     })

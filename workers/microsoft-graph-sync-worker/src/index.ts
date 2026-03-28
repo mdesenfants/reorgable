@@ -226,7 +226,7 @@ async function syncCalendarEvents(
     {
       startDateTime: todayStart,
       endDateTime: todayEnd,
-      $select: "id,subject,start,end,isAllDay",
+      $select: "id,subject,start,end,isAllDay,location,bodyPreview,attendees,organizer",
       $expand: "calendar($select=name)",
       $top: "100",
     }

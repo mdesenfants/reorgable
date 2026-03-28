@@ -5,7 +5,7 @@ import { makeRemarkableAdapter } from "./remarkable/adapter-factory";
 import { renderHtml } from "./template";
 import { fetchDailyOffice } from "./daily-office";
 import { fetchWeather, fetchTopHeadlines, getItemsSinceCursor, getOutstandingTasks, getItemsSinceLastRun } from "./fetchers";
-import { filterItemsForBrief, buildGoogleTaskTodos, buildNoteLines } from "./tasks";
+import { filterItemsForBrief, buildGoogleTaskTodos, buildNoteLines, buildInboxSummary } from "./tasks";
 import { buildCalendarAgenda, detectCalendarConflicts } from "./calendar";
 import { summarizeWithGemini } from "./gemini";
 import { getPreviousOverview, getPreviousEngagement, persistRun, recordEngagementTracking, checkBriefEngagement, FOLDERS } from "./persistent";
@@ -34,6 +34,21 @@ const json = (data: unknown, status = 200): Response =>
   });
 
 const PACIFIC_TIMEZONE = "America/Los_Angeles";
+
+const ENTITY_DICTIONARY_KEY = "entity_dictionary";
+
+interface EntityEntry {
+  name: string;
+  type: "person" | "place" | "project" | "organization" | "other";
+  definition: string;
+}
+
+async function getEntityDictionary(kv: KVNamespace): Promise<EntityEntry[]> {
+  const raw = await kv.get(ENTITY_DICTIONARY_KEY);
+  if (!raw) return [];
+  const parsed = JSON.parse(raw);
+  return Array.isArray(parsed) ? parsed : [];
+}
 
 const getPacificParts = (date: Date) => {
   const formatted = new Intl.DateTimeFormat("en-US", {
@@ -109,6 +124,7 @@ async function renderHtmlToPdf(
     todos: Array<{ task: string; done: boolean; dueAt?: string }>;
     noteLines: string[];
     dailyOffice?: DailyOfficeData;
+    inboxSummary?: string;
   }
 ): Promise<Uint8Array> {
   const html = renderHtml({
@@ -120,6 +136,7 @@ async function renderHtmlToPdf(
     todos: args.todos,
     noteLines: args.noteLines,
     dailyOffice: args.dailyOffice,
+    inboxSummary: args.inboxSummary,
   });
 
   return htmlToPdf(env, html);
@@ -248,17 +265,19 @@ async function runDailyReport(env: Env, opts?: { force?: boolean; lookbackHours?
 
   const pacificParts = getPacificParts(now);
   const pacificDate = new Date(pacificParts.year, pacificParts.month - 1, pacificParts.day);
-  const [previousOverview, previousEngagement, operatorContext, dailyOffice] = await Promise.all([
+  const [previousOverview, previousEngagement, operatorContext, dailyOffice, entityDictionary] = await Promise.all([
     getPreviousOverview(env),
     getPreviousEngagement(env),
     env.STATE_KV.get("operator_context"),
     fetchDailyOffice(env.STATE_KV, pacificDate).catch(() => undefined),
+    getEntityDictionary(env.STATE_KV),
   ]);
 
   const agendaEvents = buildCalendarAgenda(filteredItems, now);
   const conflicts = detectCalendarConflicts(agendaEvents);
   const todos = buildGoogleTaskTodos(filteredItems);
   const noteLines = buildNoteLines(filteredItems);
+  const inboxEmails = buildInboxSummary(items);
 
   const llmSummary = await summarizeWithGemini(
     env,
@@ -269,7 +288,9 @@ async function runDailyReport(env: Env, opts?: { force?: boolean; lookbackHours?
     conflicts,
     previousEngagement,
     operatorContext ?? undefined,
-    headlines
+    headlines,
+    inboxEmails.length > 0 ? inboxEmails : undefined,
+    entityDictionary.length > 0 ? entityDictionary : undefined,
   );
 
   const pdfBytes = await renderHtmlToPdf(env, {
@@ -281,6 +302,7 @@ async function runDailyReport(env: Env, opts?: { force?: boolean; lookbackHours?
     todos,
     noteLines,
     dailyOffice: dailyOffice ?? undefined,
+    inboxSummary: llmSummary.inboxSummary,
   });
 
   const reportKey = `reports/${fileName}`;
@@ -416,6 +438,40 @@ export default {
         return json(await checkBriefEngagementStatus(env));
       } catch (error) {
         return json({ error: error instanceof Error ? error.message : "Unexpected error" }, 500);
+      }
+    }
+    if (pathname === "/entities") {
+      if (request.method === "GET") {
+        return json(await getEntityDictionary(env.STATE_KV));
+      }
+      if (request.method === "PUT") {
+        const body = (await request.json()) as EntityEntry[] | EntityEntry;
+        const entries = Array.isArray(body) ? body : [body];
+        for (const entry of entries) {
+          if (!entry.name || !entry.definition) {
+            return json({ error: "Each entity must have name and definition" }, 400);
+          }
+        }
+        const existing = await getEntityDictionary(env.STATE_KV);
+        const merged = new Map(existing.map((e) => [e.name.toLowerCase(), e]));
+        for (const entry of entries) {
+          merged.set(entry.name.toLowerCase(), {
+            name: entry.name,
+            type: entry.type || "other",
+            definition: entry.definition,
+          });
+        }
+        const result = Array.from(merged.values());
+        await env.STATE_KV.put(ENTITY_DICTIONARY_KEY, JSON.stringify(result));
+        return json({ ok: true, count: result.length });
+      }
+      if (request.method === "DELETE") {
+        const body = (await request.json()) as { name: string };
+        if (!body.name) return json({ error: "name is required" }, 400);
+        const existing = await getEntityDictionary(env.STATE_KV);
+        const filtered = existing.filter((e) => e.name.toLowerCase() !== body.name.toLowerCase());
+        await env.STATE_KV.put(ENTITY_DICTIONARY_KEY, JSON.stringify(filtered));
+        return json({ ok: true, count: filtered.length });
       }
     }
     return json({ error: "Not found" }, 404);
