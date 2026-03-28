@@ -62,7 +62,7 @@ function listAllTasks(tasklistId, options) {
   return collected;
 }
 
-function pushTaskPayload(ingestUrl, apiToken, task, isDone) {
+function buildTaskRequest(ingestUrl, apiToken, task, isDone) {
   var emailContext = extractEmailContext(task.notes || '');
   var payload = {
     title: task.title || 'Untitled task',
@@ -78,19 +78,24 @@ function pushTaskPayload(ingestUrl, apiToken, task, isDone) {
     parentTaskId: task.parent || undefined
   };
 
-  var response = UrlFetchApp.fetch(trimSlash(ingestUrl) + '/ingest/task', {
+  return {
+    url: trimSlash(ingestUrl) + '/ingest/task',
     method: 'post',
     contentType: 'application/json',
     muteHttpExceptions: true,
-    headers: {
-      Authorization: 'Bearer ' + apiToken
-    },
+    headers: { Authorization: 'Bearer ' + apiToken },
     payload: JSON.stringify(payload)
-  });
+  };
+}
 
-  var code = response.getResponseCode();
-  if (code < 200 || code > 299) {
-    Logger.log('Failed task push for id=%s done=%s code=%s body=%s', task.id, isDone, code, response.getContentText());
+function sendBatch(requests) {
+  if (requests.length === 0) return;
+  var responses = UrlFetchApp.fetchAll(requests);
+  for (var i = 0; i < responses.length; i++) {
+    var code = responses[i].getResponseCode();
+    if (code < 200 || code > 299) {
+      Logger.log('Batch item %s failed: %s %s', i, code, responses[i].getContentText());
+    }
   }
 }
 
@@ -101,9 +106,12 @@ function pushOpenTasksToReorgable(ingestUrl, apiToken, tasklistId) {
     maxResults: 100
   });
 
+  var requests = [];
   for (var i = 0; i < items.length; i++) {
-    pushTaskPayload(ingestUrl, apiToken, items[i], false);
+    requests.push(buildTaskRequest(ingestUrl, apiToken, items[i], false));
   }
+  Logger.log('Sending %s open task requests', requests.length);
+  sendBatch(requests);
 }
 
 function pushRecentlyClosedTasksToReorgable(ingestUrl, apiToken, tasklistId, updatedCursor) {
@@ -119,12 +127,15 @@ function pushRecentlyClosedTasksToReorgable(ingestUrl, apiToken, tasklistId, upd
   }
 
   var items = listAllTasks(tasklistId, options);
+  var requests = [];
   for (var i = 0; i < items.length; i++) {
     var task = items[i];
     var isDone = task.status === 'completed' || task.deleted === true;
     if (!isDone) continue;
-    pushTaskPayload(ingestUrl, apiToken, task, true);
+    requests.push(buildTaskRequest(ingestUrl, apiToken, task, true));
   }
+  Logger.log('Sending %s closed task requests', requests.length);
+  sendBatch(requests);
 }
 
 function trimSlash(value) {
@@ -153,18 +164,11 @@ function truncate(value, maxLen) {
   return value.length > maxLen ? value.substring(0, maxLen) : value;
 }
 
-function buildAttendeeList(event) {
-  try {
-    var guests = event.getGuestList(true);
-    if (!guests || guests.length === 0) return undefined;
-    var result = [];
-    for (var i = 0; i < guests.length; i++) {
-      result.push({ name: guests[i].getName() || '', email: guests[i].getEmail() || '' });
-    }
-    return result;
-  } catch (err) {
-    return undefined;
-  }
+function isSkippableCalendar(calId) {
+  // Skip holiday, birthday, and other Google-generated calendars
+  return /^(en\.|#contacts@|addressbook#)/.test(calId) ||
+    calId.indexOf('#holiday@') !== -1 ||
+    calId.indexOf('group.v.calendar.google.com') !== -1;
 }
 
 function buildOrganizer(event) {
@@ -183,10 +187,12 @@ function pushTodayCalendarEventsToReorgable(ingestUrl, apiToken) {
   var start = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
   var end = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
 
+  var requests = [];
   for (var c = 0; c < calendars.length; c++) {
     var cal = calendars[c];
-    var events = cal.getEvents(start, end);
+    if (isSkippableCalendar(cal.getId())) continue;
 
+    var events = cal.getEvents(start, end);
     for (var e = 0; e < events.length; e++) {
       var event = events[e];
       var calendarPayload = {
@@ -198,24 +204,20 @@ function pushTodayCalendarEventsToReorgable(ingestUrl, apiToken) {
         externalId: cal.getId() + ':' + event.getId() + ':' + event.getStartTime().getTime(),
         location: event.getLocation() || undefined,
         bodyPreview: truncate(event.getDescription(), 500) || undefined,
-        attendees: buildAttendeeList(event),
         organizer: buildOrganizer(event)
       };
 
-      var response = UrlFetchApp.fetch(trimSlash(ingestUrl) + '/ingest/calendar', {
+      requests.push({
+        url: trimSlash(ingestUrl) + '/ingest/calendar',
         method: 'post',
         contentType: 'application/json',
         muteHttpExceptions: true,
-        headers: {
-          Authorization: 'Bearer ' + apiToken
-        },
+        headers: { Authorization: 'Bearer ' + apiToken },
         payload: JSON.stringify(calendarPayload)
       });
-
-      var code = response.getResponseCode();
-      if (code < 200 || code > 299) {
-        Logger.log('Failed calendar push for calendar=%s event=%s code=%s body=%s', cal.getName(), event.getTitle(), code, response.getContentText());
-      }
     }
   }
+
+  Logger.log('Sending %s calendar requests across %s calendars', requests.length, calendars.length);
+  sendBatch(requests);
 }
