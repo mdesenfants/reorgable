@@ -111,15 +111,15 @@ export async function getItemsSinceCursor(env: { DB: D1Database }, cursor: strin
 
 export async function getOutstandingTasks(env: { DB: D1Database }): Promise<IngestedItem[]> {
   // Staleness guard: tasks from sync sources (Google Tasks, MS Todo) refresh
-  // created_at on every push (~15 min interval). If a task hasn't been refreshed
-  // in 4 hours (~16 missed cycles), the source likely completed/deleted it.
+  // created_at on every daily push. If a task hasn't been refreshed in 36 hours
+  // (missed one full cycle), the source likely completed/deleted it.
   // Microsoft tasks rely entirely on this guard (no closed-task push).
   const { results } = await env.DB.prepare(
     `SELECT id, source_type, title, summary_input, metadata_json, created_at
      FROM items
      WHERE source_type = 'task'
        AND COALESCE(json_extract(metadata_json, '$.isDone'), 0) != 1
-       AND created_at > datetime('now', '-4 hours')
+       AND created_at > datetime('now', '-36 hours')
      ORDER BY created_at ASC`
   ).all<IngestedItem>();
 

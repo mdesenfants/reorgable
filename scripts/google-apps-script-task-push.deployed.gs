@@ -34,6 +34,7 @@ function pushTasksToReorgable() {
   props.setProperty('TASKS_UPDATED_CURSOR', runStartedAt);
 
   pushTodayCalendarEventsToReorgable(ingestUrl, apiToken);
+  pushInboxEmailsToReorgable(ingestUrl, apiToken);
 }
 
 function listAllTasks(tasklistId, options) {
@@ -169,6 +170,50 @@ function extractEmailAddress(value) {
 function truncate(value, maxLen) {
   if (!value) return '';
   return value.length > maxLen ? value.substring(0, maxLen) : value;
+}
+
+function pushInboxEmailsToReorgable(ingestUrl, apiToken) {
+  var userEmail = Session.getActiveUser().getEmail();
+  if (!userEmail) {
+    Logger.log('Could not determine active user email; skipping inbox sync');
+    return;
+  }
+
+  var threads = GmailApp.search('in:inbox newer_than:1d', 0, 50);
+  var requests = [];
+
+  for (var t = 0; t < threads.length; t++) {
+    var messages = threads[t].getMessages();
+    // Use the last message in each thread as representative
+    var msg = messages[messages.length - 1];
+    var from = extractEmailAddress(msg.getFrom());
+    if (!from) continue;
+
+    var emailPayload = {
+      from: from,
+      to: userEmail,
+      subject: msg.getSubject() || '(no subject)',
+      bodyText: truncate(msg.getPlainBody(), 2000) || undefined,
+      sentAt: msg.getDate().toISOString(),
+      attachmentKeys: [],
+      isUnread: msg.isUnread(),
+      inInbox: true,
+      isStarred: msg.isStarred(),
+      externalId: msg.getId()
+    };
+
+    requests.push({
+      url: trimSlash(ingestUrl) + '/ingest/email',
+      method: 'post',
+      contentType: 'application/json',
+      muteHttpExceptions: true,
+      headers: { Authorization: 'Bearer ' + apiToken },
+      payload: JSON.stringify(emailPayload)
+    });
+  }
+
+  Logger.log('Sending %s inbox email requests', requests.length);
+  sendBatch(requests);
 }
 
 function isSkippableCalendar(calId) {

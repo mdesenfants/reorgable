@@ -66,11 +66,11 @@ npm run note "Ask Alex about the Q2 budget spreadsheet"
 
 The `quick-note.sh` script POSTs to the ingest worker's `/ingest/note` endpoint. The note lands in D1, timestamped and ready for tomorrow's report.
 
-### Every 15 minutes — source sync
+### Daily source sync
 
-Two automated syncs keep the ingest database fresh throughout the day:
+Two automated syncs populate the ingest database before each report:
 
-**Google Apps Script** (runs on a timer you set, typically every 15 min):
+**Google Apps Script** (runs once daily, just before the Cloudflare report workflow):
 - Pushes open Google Tasks to `/ingest/task`
 - Pushes recently completed/deleted Google Tasks to `/ingest/task` with `isDone=true`
 - Pushes today's Google Calendar events (all calendars) to `/ingest/calendar`
@@ -475,7 +475,7 @@ Deployed reference: `scripts/google-apps-script-task-push.deployed.gs`
    - `INGEST_API_TOKEN` — your shared token
    - `TASKLIST_ID` — optional, defaults to `@default`
   - `TASKS_UPDATED_CURSOR` — optional; managed automatically after the first run
-5. Add a time-based trigger for `pushTasksToReorgable` (every 15 minutes works well).
+5. Add a daily time-based trigger for `pushTasksToReorgable` (runs once before the Cloudflare report workflow).
 
 The script pushes:
 - Open Google Tasks to `/ingest/task`
