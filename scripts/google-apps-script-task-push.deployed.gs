@@ -90,11 +90,18 @@ function buildTaskRequest(ingestUrl, apiToken, task, isDone) {
 
 function sendBatch(requests) {
   if (requests.length === 0) return;
-  var responses = UrlFetchApp.fetchAll(requests);
-  for (var i = 0; i < responses.length; i++) {
-    var code = responses[i].getResponseCode();
-    if (code < 200 || code > 299) {
-      Logger.log('Batch item %s failed: %s %s', i, code, responses[i].getContentText());
+  var CHUNK = 50;
+  for (var start = 0; start < requests.length; start += CHUNK) {
+    var chunk = requests.slice(start, start + CHUNK);
+    var responses = UrlFetchApp.fetchAll(chunk);
+    for (var i = 0; i < responses.length; i++) {
+      var code = responses[i].getResponseCode();
+      if (code < 200 || code > 299) {
+        Logger.log('Batch item %s failed: %s %s', start + i, code, responses[i].getContentText());
+      }
+    }
+    if (start + CHUNK < requests.length) {
+      Utilities.sleep(500);
     }
   }
 }
