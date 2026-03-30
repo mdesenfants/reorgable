@@ -194,7 +194,11 @@ async function handleCalendarIngest(request: Request, env: Env): Promise<Respons
       endAt: payload.endAt,
       calendarName: payload.calendarName,
       isAllDay: payload.isAllDay,
-      externalId: payload.externalId ?? null
+      externalId: payload.externalId ?? null,
+      location: payload.location ?? null,
+      bodyPreview: payload.bodyPreview ?? null,
+      attendees: payload.attendees ?? null,
+      organizer: payload.organizer ?? null,
     },
     payload,
     payload.externalId ?? `${payload.calendarName}:${payload.title}:${payload.startAt}:${payload.endAt}`

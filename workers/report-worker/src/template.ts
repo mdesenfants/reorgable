@@ -2,14 +2,14 @@
 // Used by scripts/preview-report.ts (local Puppeteer) and, in Phase 2,
 // by the Cloudflare Worker via @cloudflare/puppeteer (Browser Rendering).
 
-import type { DailyOfficeData, DailyOfficeSection, DailyOfficeLesson } from "./daily-office";
+import type { DailyOfficeData, DailyOfficeLesson } from "./daily-office";
+import type { WeatherSnapshot } from "@reorgable/shared";
 
 export interface TemplateData {
   dateLabel: string;
-  weather: { tempF: number; weatherCode: number; hourly: Array<{ hour: number; tempF: number; weatherCode: number }> };
+  weather: WeatherSnapshot;
   overview: string;
   deltaSinceYesterday: string;
-  followUps: string[];
   agendaEvents: Array<{
     title: string;
     startAt: string;
@@ -17,10 +17,12 @@ export interface TemplateData {
     startLabel: string;
     endLabel: string;
     calendarName: string;
+    location?: string;
   }>;
   todos: Array<{ task: string; done: boolean; isSubtask?: boolean; dueAt?: string }>;
   noteLines: string[];
   dailyOffice?: DailyOfficeData;
+  inboxSummary?: string;
 }
 
 /** Escape HTML special characters to prevent injection in rendered output. */
@@ -60,26 +62,30 @@ const WMO: Partial<Record<number, string>> = {
   99: "Thunderstorm w/ heavy hail",
 };
 
-function weatherLabel(code: number, tempF: number): string {
+function weatherLabel(code: number): string {
   const desc = WMO[code] ?? `WMO ${code}`;
-  return `${tempF.toFixed(0)}°F · ${desc}`;
+  return desc;
 }
 
-// WMO code → Weather Icons class (free vector icon font, crisp on e-ink).
-const WMO_ICON: Partial<Record<number, string>> = {
-  0: "wi-day-sunny", 1: "wi-day-sunny-overcast", 2: "wi-day-cloudy", 3: "wi-cloudy",
-  45: "wi-fog", 48: "wi-fog",
-  51: "wi-sprinkle", 53: "wi-sprinkle", 55: "wi-sprinkle",
-  61: "wi-rain-mix", 63: "wi-rain", 65: "wi-rain-wind",
-  71: "wi-snow", 73: "wi-snow", 75: "wi-snow", 77: "wi-snow",
-  80: "wi-showers", 81: "wi-showers", 82: "wi-showers",
-  85: "wi-rain-mix", 86: "wi-rain-mix",
-  95: "wi-thunderstorm", 96: "wi-thunderstorm", 99: "wi-thunderstorm",
+function weatherRangeLabel(code: number, highF: number, lowF: number): string {
+  return `H ${highF.toFixed(0)}° / L ${lowF.toFixed(0)}° · ${weatherLabel(code)}`;
+}
+
+// WMO code → emoji glyph (inline, no CSS pseudo-elements for robust PDF rendering).
+const WMO_EMOJI: Partial<Record<number, string>> = {
+  0: "\u2600", 1: "\uD83C\uDF24", 2: "\u26C5", 3: "\u2601",
+  45: "\uD83C\uDF2B", 48: "\uD83C\uDF2B",
+  51: "\uD83C\uDF26", 53: "\uD83C\uDF26", 55: "\uD83C\uDF26",
+  61: "\uD83C\uDF27", 63: "\uD83C\uDF27", 65: "\uD83C\uDF27",
+  71: "\u2744", 73: "\u2744", 75: "\u2744", 77: "\u2744",
+  80: "\uD83C\uDF26", 81: "\uD83C\uDF26", 82: "\uD83C\uDF26",
+  85: "\uD83C\uDF27", 86: "\uD83C\uDF27",
+  95: "\u26C8", 96: "\u26C8", 99: "\u26C8",
 };
 
 function wmoIcon(code: number): string {
-  const cls = WMO_ICON[code] ?? "wi-na";
-  return `<i class="wi ${cls}"></i>`;
+  const emoji = WMO_EMOJI[code] ?? "\u2753";
+  return `<span class="wi">${emoji}</span>`;
 }
 
 /**
@@ -132,8 +138,8 @@ export function renderReferenceHtml(data: ReferenceTemplateData): string {
   <title>Reference \u2013 ${esc(data.dateLabel)}</title>
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400..900;1,400..900&display=swap');
-    @import url('https://cdnjs.cloudflare.com/ajax/libs/weather-icons/2.0.12/css/weather-icons.min.css');
-    @page { size: Letter; margin: 0.55in 0.65in 0.5in; }
+    /* Weather icon inline styles (emoji embedded directly for robust PDF rendering). */
+    .wi { font-style: normal; display: inline-block; margin-right: 3px; }
     html, body { margin: 0; padding: 0; }
     body {
       font-family: 'Playfair Display', serif;
@@ -147,9 +153,7 @@ export function renderReferenceHtml(data: ReferenceTemplateData): string {
     .divider { border: none; border-top: 1.5px solid #555; margin: 0.3em 0 0.6em; }
     .ref-item {
       break-inside: avoid;
-      border: 1.5px solid #666;
-      border-radius: 3px;
-      padding: 0.5em 0.7em;
+      padding: 0.5em 0;
       margin-bottom: 0.5em;
     }
     .ref-source {
@@ -173,41 +177,38 @@ export function renderReferenceHtml(data: ReferenceTemplateData): string {
 </html>`;
 }
 
-function renderOfficeLesson(name: string, lesson?: DailyOfficeLesson): string {
+function renderOfficeLesson(name: string, lesson?: DailyOfficeLesson, headerHtml?: string): string {
   if (!lesson) return "";
   const textBlock = lesson.text
     ? `<div class="office-text">${esc(lesson.text)}</div>`
     : `<div class="office-ref-only">(text unavailable)</div>`;
-  return `<div class="office-lesson">
-        <div class="office-lesson-label">${esc(name)}: ${esc(lesson.reference)}</div>
-        ${textBlock}
-      </div>`;
-}
-
-function renderOfficeSection(label: string, section: DailyOfficeSection): string {
-  const psalmText = section.psalms.length > 0 ? section.psalms.join(", ") : "None";
-  return `<div class="office-section">
-      <div class="office-section-title">${esc(label)}</div>
-      <div class="office-psalms">Psalms: ${esc(psalmText)}</div>
-      ${renderOfficeLesson("First Lesson", section.first)}
-      ${renderOfficeLesson("Second Lesson", section.second)}
-      ${renderOfficeLesson("Gospel", section.gospel)}
-    </div>`;
+  const label = name === lesson.reference ? esc(name) : `${esc(name)}: ${esc(lesson.reference)}`;
+  return `${headerHtml ?? ""}
+        <div class="office-lesson-label">${label}</div>
+        ${textBlock}`;
 }
 
 function renderOfficePage(office: DailyOfficeData): string {
   const subtitle = office.title
     ? `${office.title} \u00b7 ${office.day}`
     : `${office.week} \u00b7 ${office.day}`;
+  const psalmHtml = office.study.psalms
+    .map((p) => renderOfficeLesson(p.reference, p))
+    .join("");
+  const lessonHtml = office.study.lessons
+    .map((lesson, index) => renderOfficeLesson(`Lesson ${index + 1}`, lesson))
+    .join("");
+  const lessons = psalmHtml + lessonHtml;
   return `
   <div class="office-page">
-    <div class="office-title">Daily Office</div>
-    <div class="office-subtitle">${esc(subtitle)}</div>
-    <div class="office-season">${esc(office.season)}</div>
-    <hr class="divider">
     <div class="office-columns">
-      ${renderOfficeSection("Morning Prayer", office.morning)}
-      ${renderOfficeSection("Evening Prayer", office.evening)}
+      <div class="office-header">
+        <div class="office-title">Daily Office</div>
+        <div class="office-subtitle">${esc(subtitle)}</div>
+        <div class="office-season">${esc(office.season)}</div>
+        <hr class="divider">
+      </div>
+      ${lessons}
     </div>
   </div>`;
 }
@@ -219,7 +220,7 @@ export function renderHtml(data: TemplateData): string {
   const agendaHtml = data.agendaEvents
     .map(
       (item, i) =>
-        `<li><span class="item-num">${i + 1}.</span><span><strong>${esc(item.startLabel)}-${esc(item.endLabel)}</strong> ${esc(item.title)} <em>(${esc(item.calendarName)})</em></span></li>`
+        `<li><span class="item-num">${i + 1}.</span><span><strong>${esc(item.startLabel)}-${esc(item.endLabel)}</strong> ${esc(item.title)}${item.location ? ` · ${esc(item.location)}` : ""} <em>(${esc(item.calendarName)})</em></span></li>`
     )
     .join("\n          ");
 
@@ -274,10 +275,6 @@ export function renderHtml(data: TemplateData): string {
     .map((line) => `<li>${esc(line)}</li>`)
     .join("\n          ");
 
-  const followUpsHtml = data.followUps
-    .map((line) => `<li><span>${esc(line)}</span></li>`)
-    .join("\n          ");
-
   const dayStartMinutes = 6 * 60;
   const dayEndMinutes = 21 * 60;
   const dayDurationMinutes = dayEndMinutes - dayStartMinutes;
@@ -325,7 +322,8 @@ export function renderHtml(data: TemplateData): string {
   <title>Daily Brief \u2013 ${esc(data.dateLabel)}</title>
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400..900;1,400..900&display=swap');
-    @import url('https://cdnjs.cloudflare.com/ajax/libs/weather-icons/2.0.12/css/weather-icons.min.css');
+    /* Weather icon inline styles (emoji embedded directly for robust PDF rendering). */
+    .wi { font-style: normal; display: inline-block; margin-right: 3px; }
 
     /* ── Design System ─────────────────────────────────────────────── */
     @page {
@@ -334,9 +332,9 @@ export function renderHtml(data: TemplateData): string {
     }
 
     :root {
-      --box-border-width: 1.5px;
-      --box-border-color: #666;
-      --box-border-radius: 3px;
+      --box-border-width: 0;
+      --box-border-color: transparent;
+      --box-border-radius: 0;
     }
 
     html, body { margin: 0; padding: 0; }
@@ -371,12 +369,8 @@ export function renderHtml(data: TemplateData): string {
 
     /* ── Panels ────────────────────────────────────────────────────── */
     .panel {
-      border-style: solid;
-      border-width: var(--box-border-width);
-      border-color: var(--box-border-color);
-      border-radius: var(--box-border-radius);
       box-sizing: border-box;
-      padding: 0.5em 0.7em;
+      padding: 0.5em 0;
       break-inside: avoid;
     }
 
@@ -429,15 +423,13 @@ export function renderHtml(data: TemplateData): string {
       display: inline-block;
       font-size: 9pt;
       color: #333;
-      border: 1px solid #888;
-      border-radius: 2px;
       padding: 0 0.3em;
       margin-left: 0.4em;
       vertical-align: middle;
       line-height: 1.4;
     }
-    .due-badge.overdue { font-weight: 700; border-color: #000; color: #000; }
-    .due-badge.today { font-weight: 600; border-style: dashed; }
+    .due-badge.overdue { font-weight: 700; color: #000; }
+    .due-badge.today { font-weight: 600; }
     .due-badge.soon { font-style: italic; }
     /* ── Weather ───────────────────────────────────────────────────── */
     
@@ -450,15 +442,6 @@ export function renderHtml(data: TemplateData): string {
     }
     .weather-badge .wi { margin-right: 0.2em; }
     .delta-text { font-size: 12pt; color: #333; margin: 0 0 0.1em; font-style: italic; }
-    .follow-ups { list-style: none; padding: 0; margin: 0; }
-    .follow-ups li {
-      display: flex;
-      gap: 0.35em;
-      line-height: 1.45;
-      margin-bottom: 0.15em;
-      font-size: 13pt;
-    }
-    .follow-ups li::before { content: "→"; color: #444; flex-shrink: 0; }
     .hour-weather {
       display: block;
       font-size: 8pt;
@@ -511,11 +494,14 @@ export function renderHtml(data: TemplateData): string {
 
     /* ── Daily Office page ─────────────────────────────────────────── */
     .office-page { break-before: page; }
+    .office-header { column-span: all; margin-bottom: 0.3em; }
     .office-title { font-size: 20pt; font-weight: 700; margin: 0 0 0.15em; }
     .office-subtitle { font-size: 14pt; color: #222; margin: 0 0 0.1em; }
     .office-season { font-size: 12pt; color: #333; font-style: italic; margin: 0 0 0.15em; }
     .office-columns {
-      display: block;
+      columns: 2;
+      column-gap: 1.5em;
+      column-fill: auto;
     }
     .office-section { margin-bottom: 0.4em; break-inside: auto; }
     .office-section-title {
@@ -524,51 +510,21 @@ export function renderHtml(data: TemplateData): string {
       break-after: avoid;
     }
     .office-psalms { font-size: 10pt; color: #333; margin: 0 0 0.15em; }
-    .office-lesson {
-      margin-bottom: 0.25em;
-      break-inside: auto;
-      position: relative;
-      background: #fff;
-      padding: 0.05em 0;
-    }
-    .office-lesson::after {
-      content: "";
-      position: absolute;
-      top: 0;
-      right: 0;
-      bottom: 0;
-      width: 50%;
-      background: #ededed;
-      pointer-events: none;
-      z-index: 0;
-    }
     .office-lesson-label {
       font-size: 11pt;
       font-weight: 600;
-      margin: 0 0 0.05em;
+      margin: 0.4em 0 0.05em;
       break-after: avoid;
-      position: relative;
-      z-index: 1;
     }
     .office-text {
       font-size: 9.5pt;
       line-height: 1.45;
       white-space: pre-line;
-      width: 50%;
-      padding-right: 0.5em;
-      box-sizing: border-box;
-      position: relative;
-      z-index: 1;
     }
     .office-ref-only {
       font-size: 9.5pt;
       color: #444;
       font-style: italic;
-      width: 50%;
-      padding-right: 0.5em;
-      box-sizing: border-box;
-      position: relative;
-      z-index: 1;
     }
 
     /* ── Day calendar page ─────────────────────────────────────────── */
@@ -601,7 +557,7 @@ export function renderHtml(data: TemplateData): string {
       left: 0;
       right: 0;
       display: grid;
-      grid-template-columns: 72px 1fr;
+      grid-template-columns: 48px 1fr;
       align-items: center;
     }
     .calendar-row-label {
@@ -614,14 +570,13 @@ export function renderHtml(data: TemplateData): string {
       border-top: 1px solid #bbb;
       display: block;
       height: 0;
-      margin-right: 0.5em;
     }
     .calendar-events {
       position: absolute;
       top: 0;
       bottom: 0;
-      left: 76px;
-      right: 0.5em;
+      left: 52px;
+      right: 0;
     }
     .calendar-event {
       position: absolute;
@@ -659,7 +614,7 @@ export function renderHtml(data: TemplateData): string {
   <!-- Header -->
   <div class="header-row">
     <h1 class="brief-title">Daily Brief</h1>
-    <span class="weather-badge">${wmoIcon(data.weather.weatherCode)} ${esc(weatherLabel(data.weather.weatherCode, data.weather.tempF))}</span>
+    <span class="weather-badge">${wmoIcon(data.weather.weatherCode)} ${esc(weatherRangeLabel(data.weather.weatherCode, data.weather.highF, data.weather.lowF))}</span>
   </div>
   <div class="date-sub">${esc(data.dateLabel)}</div>
   <hr class="divider">
@@ -679,6 +634,12 @@ export function renderHtml(data: TemplateData): string {
     </ol>
   </div>
 
+  ${data.inboxSummary ? `<!-- Inbox Summary -->
+  <div class="panel section-gap">
+    <div class="section-title">Inbox</div>
+    <p class="overview-text">${esc(data.inboxSummary)}</p>
+  </div>` : ""}
+
   <!-- Todos -->
   ${
     activeTodos.length > 0
@@ -690,20 +651,6 @@ export function renderHtml(data: TemplateData): string {
   </div>`
       : ""
   }
-
-  <!-- Follow-ups -->
-  ${
-    data.followUps.length > 0
-      ? `<div class="panel section-gap">
-    <div class="section-title">Follow-ups</div>
-    <ul class="follow-ups">
-        ${followUpsHtml}
-    </ul>
-  </div>`
-      : ""
-  }
-
-
 
   <!-- ═══ PAGE 2: DAY CALENDAR VIEW (6AM-9PM) ═══ -->
   <div class="day-view-page">

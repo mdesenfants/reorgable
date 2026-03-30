@@ -39,7 +39,7 @@ Four Cloudflare Workers:
 |---|---|---|
 | `workers/ingest-worker` | `reorgable-ingest` | Authenticated REST API for all ingestion |
 | `workers/email-worker` | `reorgable-email` | Receives Cloudflare Email Routing events, stores EML to R2, forwards metadata to ingest |
-| `workers/microsoft-graph-sync-worker` | `reorgable-ms-graph-sync` | Syncs Microsoft To Do, flagged emails, and Outlook calendar to ingest |
+| `workers/microsoft-graph-sync-worker` | `reorgable-ms-sync` | Syncs Microsoft To Do, flagged emails, and Outlook calendar to ingest |
 | `workers/report-worker` | `reorgable-report` | Scheduled report pipeline: summarize → render → upload |
 
 Cloudflare resources used:
@@ -66,12 +66,13 @@ npm run note "Ask Alex about the Q2 budget spreadsheet"
 
 The `quick-note.sh` script POSTs to the ingest worker's `/ingest/note` endpoint. The note lands in D1, timestamped and ready for tomorrow's report.
 
-### Every 15 minutes — source sync
+### Daily source sync
 
-Two automated syncs keep the ingest database fresh throughout the day:
+Two automated syncs populate the ingest database before each report:
 
-**Google Apps Script** (runs on a timer you set, typically every 15 min):
-- Pushes incomplete Google Tasks to `/ingest/task`
+**Google Apps Script** (runs once daily, just before the Cloudflare report workflow):
+- Pushes open Google Tasks to `/ingest/task`
+- Pushes recently completed/deleted Google Tasks to `/ingest/task` with `isDone=true`
 - Pushes today's Google Calendar events (all calendars) to `/ingest/calendar`
 
 **Microsoft Graph sync worker** (cron at `11:00 UTC` / 4 AM Pacific):
@@ -86,31 +87,32 @@ All of this accumulates in D1. Deduplication by `externalId` means repeated sync
 
 ### 5:00 AM Pacific — the report runs
 
-The report-worker has cron triggers at `12:00 UTC` and `13:00 UTC` (the second is a safety retry). A Pacific-time guard in code ensures it only fires at 5 AM local, handling DST automatically.
+The report-worker has cron triggers at `12:00 UTC` (5 AM PDT) and `13:00 UTC` (5 AM PST). A Pacific-time guard in code ensures only the trigger that lands on 5 AM local actually runs, handling DST automatically.
 
 Here's what happens:
 
 1. **Gather items** — query D1 for everything ingested since the last run
 2. **Filter for relevance** — only inbox emails linked to open tasks are included; completed tasks are excluded
 3. **Build structured sections**:
-   - Calendar agenda (today's events, sorted by start time)
+  - Calendar agenda (today's events, deduplicated across calendars and sorted by start time)
    - Conflict detection (overlapping meetings are flagged)
-   - To-do checklist (open tasks from Google Tasks / Microsoft To Do)
+  - To-do checklist (open tasks from Google Tasks / Microsoft To Do, with completed child tasks hidden)
    - Notes (quick captures from the note endpoint)
-4. **Fetch context** — pull yesterday's overview and follow-ups from the last `report_runs` row
-5. **Call Gemini** — send the full item list, weather forecast, yesterday's context, and any calendar conflicts to the LLM with a structured JSON schema. Gemini returns:
-   - A 2–5 sentence executive overview
+4. **Fetch context** — pull yesterday's overview from the last `report_runs` row
+5. **Fetch top headlines** — pull the top 5 US headlines from NewsAPI, prioritizing stories about science, technology, business, international affairs, and Seattle sports
+6. **Fetch Daily Office readings** — resolve today's liturgical position in the Anglican lectionary, fetch morning and evening readings from bible-api.com, and merge/deduplicate the study set
+7. **Call Gemini** — send the full item list, weather forecast, yesterday's context, headlines, and any calendar conflicts to the LLM with a structured JSON schema. Gemini returns:
+  - A 2–5 sentence executive overview (first sentence includes daily weather high/low and condition; closing sentence summarizes notable headlines)
    - A delta summary (what changed since yesterday)
-   - Concrete follow-up actions (unresolved items from yesterday carry forward)
-6. **Render the PDF** — Puppeteer prints a multi-page Letter-format document:
-   - **Page 1+**: header with weather, overview, delta text, day agenda, to-do checklist with checkboxes, follow-ups panel
+8. **Render the PDF** — Puppeteer prints a multi-page Letter-format document:
+  - **Page 1+**: header with weather high/low, overview, delta text, day agenda, to-do checklist with checkboxes
    - **Day View page**: a visual 6 AM–9 PM calendar with event blocks and hourly weather
+   - **Daily Office page**: lectionary readings in a two-column layout, with Study heading, psalms, and lesson texts that flow across columns
    - **Notes page**: any captured notes plus ruled lines for handwriting
-7. **Render a reference appendix** — if there are emails or notes with longer bodies, a second PDF is generated with the full text of each item
-8. **Store in R2** — both PDFs are saved to the reports bucket
-9. **Upload to reMarkable** — the main brief and (if present) the reference doc are uploaded together to the `/Daily Briefings` folder on the tablet
-10. **Archive yesterday's brief** — the previous day's PDF is re-uploaded to `/Briefs` for history, then marked so it won't be archived again
-11. **Record the run** — D1 gets a `report_runs` row with the summary JSON, upload status, and reMarkable document ID; a `brief_engagement` row tracks the uploaded doc
+9. **Store in R2** — the PDF is saved to the reports bucket
+10. **Upload to reMarkable** — the brief is uploaded to the `/Daily Briefings` folder on the tablet
+11. **Archive yesterday's brief** — the previous day's PDF is re-uploaded to `/Briefs` for history, then marked so it won't be archived again
+12. **Record the run** — D1 gets a `report_runs` row with the summary JSON, upload status, and reMarkable document ID; a `brief_engagement` row tracks the uploaded doc
 
 ### 5:01 AM — it's on your tablet
 
@@ -119,10 +121,8 @@ Pick up your reMarkable. The daily brief is in `/Daily Briefings`. You get:
 - A quick-scan overview of the day ahead
 - A visual timeline showing where your meetings fall (and if any overlap)
 - A checkbox list of open tasks you can tick off with the pen
-- Follow-up items that carried over from yesterday
+- Daily Office lectionary readings in a two-column layout
 - A notes page for meeting scribbles
-
-The reference appendix sits alongside it if you need the full text of an email thread or a longer note.
 
 ### During the day — the feedback loop
 
@@ -141,7 +141,7 @@ This queries the reMarkable cloud for document presence. If you've deleted or ar
 
 ### Tomorrow morning — the cycle repeats
 
-When the next brief generates, Gemini sees yesterday's overview and follow-ups. Unresolved items carry forward automatically. The delta summary highlights what changed overnight. Yesterday's PDF moves to `/Briefs` for archival.
+When the next brief generates, Gemini sees yesterday's overview and compares deltas against new task/email/calendar context. The delta summary highlights what changed overnight. Yesterday's PDF moves to `/Briefs` for archival.
 
 ## Project layout
 
@@ -175,6 +175,7 @@ workers/
 - [Wrangler CLI](https://developers.cloudflare.com/workers/wrangler/) v4+ (`npm install -g wrangler`)
 - A Cloudflare account with Workers, D1, R2, KV, and Browser Rendering enabled
 - A [Google AI Studio](https://aistudio.google.com/) API key for Gemini
+- A [NewsAPI](https://newsapi.org/) key (free tier) for daily headlines (optional — overview still generates without one)
 - A reMarkable tablet (optional — reports still generate without one)
 
 ### 1. Clone and install
@@ -257,7 +258,10 @@ printf "%s" "<your-gemini-api-key>" | wrangler secret put GEMINI_API_KEY \
 # Optional — override the default model (gemini-3-flash-preview)
 printf "%s" "gemini-3-flash-preview" | wrangler secret put GEMINI_MODEL \
   --config workers/report-worker/wrangler.toml
+printf "%s" "<newsapi-key>"              | wrangler secret put NEWS_API       -c workers/report-worker/wrangler.toml
 ```
+
+`NEWS_API` is optional. If present, the report worker fetches top US headlines from newsapi.org and supplies them as optional context to the LLM summary.
 
 ### 6. Set up Microsoft Graph sync (optional)
 
@@ -281,7 +285,7 @@ printf "%s" "<ingest-url>"   | wrangler secret put INGEST_URL       -c workers/m
 printf "%s" "<ingest-token>" | wrangler secret put INGEST_API_TOKEN -c workers/microsoft-graph-sync-worker/wrangler.toml
 ```
 
-The worker runs on a daily cron (11:00 UTC) and also exposes `POST /tasks/create` and `POST /tasks/complete` for the report worker to write back follow-ups.
+The worker runs on a daily cron (11:00 UTC) and also exposes `POST /tasks/create` and `POST /tasks/complete` for manual task management.
 
 ### 7. Pair reMarkable (optional)
 
@@ -450,6 +454,12 @@ Relevancy refresh rules:
 
 For reliable dedup, always send stable `externalId` values from source systems.
 
+Additional report-layer deduplication behavior:
+
+- Calendar events with matching normalized title and exact start/end timestamps are collapsed so shared events from multiple calendars render once.
+- Repeating task duplicates are grouped by normalized title + parent task; overdue prior instances are suppressed once a newer instance exists.
+- Completed child tasks are omitted from the report checklist.
+
 ---
 
 ## Google Tasks integration
@@ -464,11 +474,26 @@ Deployed reference: `scripts/google-apps-script-task-push.deployed.gs`
    - `INGEST_URL` — your ingest worker URL
    - `INGEST_API_TOKEN` — your shared token
    - `TASKLIST_ID` — optional, defaults to `@default`
-5. Add a time-based trigger for `pushTasksToReorgable` (every 15 minutes works well).
+  - `TASKS_UPDATED_CURSOR` — optional; managed automatically after the first run
+5. Add a daily time-based trigger for `pushTasksToReorgable` (runs once before the Cloudflare report workflow).
 
 The script pushes:
 - Open Google Tasks to `/ingest/task`
+- Recently completed/deleted tasks (via `updatedMin`) to `/ingest/task` with `isDone=true`
 - Today's events from all calendars to `/ingest/calendar`
+
+---
+
+## Complexity checks
+
+Cyclomatic complexity enforcement is wired through two scripts:
+
+- `npm run complexity:report` — prints both whole-file and worst-symbol cyclomatic scores.
+- `npm run complexity:check` — fails when either threshold is exceeded (`symbol > 40` or `file > 200`).
+
+Use `npm run lint` to run ESLint, including the `complexity` rule gate.
+
+Serena MCP can be enabled for this workspace via `.vscode/mcp.json` (requires `uvx` on your PATH).
 
 ---
 
@@ -546,8 +571,9 @@ npm run preview
 
 ## Schedule and timing notes
 
-- Cron triggers fire at `12:00 UTC` and `13:00 UTC` daily. Both windows are checked; the second is a safety retry.
-- The report worker enforces a Pacific-time 5:00 AM earliest-start guard in code to handle DST without updating cron strings.
+- Cron triggers fire at `12:00 UTC` (5 AM PDT) and `13:00 UTC` (5 AM PST) daily. Only one runs — the `shouldRunNow()` guard checks Pacific hour === 5 and skips the off-season trigger.
+- The worker also stores a per-day generation key in KV, so only one report is produced per Pacific calendar day even if `/run` is hit more than once.
+- This dual-cron approach means no manual cron changes are needed for DST transitions.
 - If no items were ingested since the last run, the worker skips generation unless `force=true`.
 
 ## reMarkable upload notes
@@ -555,7 +581,7 @@ npm run preview
 The worker uses the open-source-compatible reMarkable cloud API (`/doc/v2/files`). This endpoint does not support folder placement directly, so the worker encodes folder intent in the filename:
 
 ```
-Daily Briefings - YYYY-MM-DD Daily Brief.pdf
+Daily Briefings - YYYY-MM-DD.pdf
 ```
 
 This makes reports easy to sort and find in the reMarkable file list.

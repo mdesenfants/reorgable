@@ -52,7 +52,11 @@ export const calendarIngestSchema = z.object({
   endAt: z.string().datetime(),
   calendarName: z.string().min(1),
   isAllDay: z.boolean().default(false),
-  externalId: z.string().optional()
+  externalId: z.string().optional(),
+  location: z.string().optional(),
+  bodyPreview: z.string().optional(),
+  attendees: z.array(z.object({ name: z.string(), email: z.string() })).optional(),
+  organizer: z.object({ name: z.string(), email: z.string() }).optional(),
 });
 
 export const storedItemPayloadSchema = z.object({
@@ -70,3 +74,10 @@ export type EmailIngest = z.infer<typeof emailIngestSchema>;
 export type NoteIngest = z.infer<typeof noteIngestSchema>;
 export type CalendarIngest = z.infer<typeof calendarIngestSchema>;
 export type StoredItemPayload = z.infer<typeof storedItemPayloadSchema>;
+
+export type WeatherSnapshot = {
+  highF: number;
+  lowF: number;
+  weatherCode: number;
+  hourly: Array<{ hour: number; tempF: number; weatherCode: number }>;
+};

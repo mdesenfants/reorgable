@@ -63,4 +63,8 @@ export class HttpRemarkableAdapter implements RemarkableAdapter {
   async downloadDocument(_docId: string): Promise<RemarkableDownloadResult> {
     return { ok: false, message: "HTTP adapter does not support download" };
   }
+
+  async deleteDocument(_docId: string): Promise<{ ok: boolean; message: string }> {
+    return { ok: false, message: "HTTP adapter does not support delete" };
+  }
 }
