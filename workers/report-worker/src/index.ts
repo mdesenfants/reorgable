@@ -154,70 +154,6 @@ async function uploadWithRetry(
   return lastResult;
 }
 
-async function archivePreviousBrief(
-  env: Env,
-  adapter: any,
-  now: Date,
-  currentFileName: string
-) {
-  const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-  const previousFileName = buildFileName(yesterday);
-  const previousKey = `reports/${previousFileName}`;
-
-  if (previousFileName === currentFileName) {
-    return {
-      attempted: false,
-      archived: false,
-      sourceKey: previousKey,
-      message: "Previous brief filename matched current; skipping archive"
-    };
-  }
-
-  const alreadyArchived = await env.STATE_KV.get("last_archived_report_key");
-  if (alreadyArchived === previousKey) {
-    return {
-      attempted: false,
-      archived: false,
-      sourceKey: previousKey,
-      message: "Previous brief already archived"
-    };
-  }
-
-  const previousObj = await env.REPORT_BUCKET.get(previousKey);
-  if (!previousObj) {
-    return {
-      attempted: false,
-      archived: false,
-      sourceKey: previousKey,
-      message: "No previous brief found in R2 to archive"
-    };
-  }
-
-  const bytes = new Uint8Array(await previousObj.arrayBuffer());
-  const upload = await uploadWithRetry(adapter, {
-    fileName: previousFileName,
-    folder: FOLDERS.HISTORY_BRIEFS_FOLDER,
-    bytes
-  });
-
-  if (!upload.ok) {
-    return {
-      attempted: true,
-      archived: false,
-      sourceKey: previousKey,
-      message: `Archive upload failed: ${upload.message}`
-    };
-  }
-
-  await env.STATE_KV.put("last_archived_report_key", previousKey);
-  return {
-    attempted: true,
-    archived: true,
-    sourceKey: previousKey,
-    message: "Archived previous brief to /Briefs"
-  };
-}
-
 async function runDailyReport(env: Env, opts?: { force?: boolean; lookbackHours?: number; since?: string }) {
   const now = new Date();
 
@@ -333,8 +269,6 @@ async function runDailyReport(env: Env, opts?: { force?: boolean; lookbackHours?
     }
   }
 
-  const archiveResult = await archivePreviousBrief(env, remarkable, now, fileName);
-
   const runId = await persistRun(
     env,
     now.toISOString(),
@@ -365,7 +299,6 @@ async function runDailyReport(env: Env, opts?: { force?: boolean; lookbackHours?
     reportKey,
     remarkable: uploadResult!,
     referenceDoc: null,
-    archive: archiveResult,
   };
 }
 

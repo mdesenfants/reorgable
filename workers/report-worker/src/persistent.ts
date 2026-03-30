@@ -1,12 +1,3 @@
-import type { DailyOfficeData } from "./daily-office";
-
-type ArchiveResult = {
-  attempted: boolean;
-  archived: boolean;
-  sourceKey?: string;
-  message: string;
-};
-
 type EngagementSummary = {
   briefName: string;
   uploadedAt: string;
@@ -16,8 +7,6 @@ type EngagementSummary = {
   retentionHours?: number;
 };
 
-const LAST_ARCHIVED_KEY = "last_archived_report_key";
-const HISTORY_BRIEFS_FOLDER = "/Briefs";
 const CURRENT_BRIEFS_FOLDER = "/Daily Briefings";
 
 export async function persistRun(
@@ -76,76 +65,6 @@ export async function getPreviousEngagement(env: { DB: D1Database }): Promise<En
   };
 }
 
-export async function archivePreviousBrief(
-  env: { STATE_KV: KVNamespace; REPORT_BUCKET: R2Bucket },
-  adapter: Record<string, unknown>,
-  now: Date,
-  currentFileName: string,
-  buildFileName: (d: Date) => string,
-  uploadWithRetry: (
-    adapter: unknown,
-    args: { fileName: string; folder: string; bytes: Uint8Array },
-    maxAttempts?: number
-  ) => Promise<{ ok: boolean; message: string }>
-): Promise<ArchiveResult> {
-  const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-  const previousFileName = buildFileName(yesterday);
-  const previousKey = `reports/${previousFileName}`;
-
-  if (previousFileName === currentFileName) {
-    return {
-      attempted: false,
-      archived: false,
-      sourceKey: previousKey,
-      message: "Previous brief filename matched current; skipping archive"
-    };
-  }
-
-  const alreadyArchived = await env.STATE_KV.get(LAST_ARCHIVED_KEY);
-  if (alreadyArchived === previousKey) {
-    return {
-      attempted: false,
-      archived: false,
-      sourceKey: previousKey,
-      message: "Previous brief already archived"
-    };
-  }
-
-  const previousObj = await env.REPORT_BUCKET.get(previousKey);
-  if (!previousObj) {
-    return {
-      attempted: false,
-      archived: false,
-      sourceKey: previousKey,
-      message: "No previous brief found in R2 to archive"
-    };
-  }
-
-  const bytes = new Uint8Array(await previousObj.arrayBuffer());
-  const upload = await uploadWithRetry(adapter, {
-    fileName: previousFileName,
-    folder: HISTORY_BRIEFS_FOLDER,
-    bytes
-  });
-
-  if (!upload.ok) {
-    return {
-      attempted: true,
-      archived: false,
-      sourceKey: previousKey,
-      message: `Archive upload failed: ${upload.message}`
-    };
-  }
-
-  await env.STATE_KV.put(LAST_ARCHIVED_KEY, previousKey);
-  return {
-    attempted: true,
-    archived: true,
-    sourceKey: previousKey,
-    message: "Archived previous brief to /Briefs"
-  };
-}
-
 export async function recordEngagementTracking(
   env: { DB: D1Database },
   reportRunId: string,
@@ -186,5 +105,5 @@ export async function checkBriefEngagement(env: { DB: D1Database }, remoteDocIds
   return { checked: tracked?.length ?? 0, updated };
 }
 
-export const FOLDERS = { CURRENT_BRIEFS_FOLDER, HISTORY_BRIEFS_FOLDER };
-export type { ArchiveResult, EngagementSummary };
+export const FOLDERS = { CURRENT_BRIEFS_FOLDER };
+export type { EngagementSummary };

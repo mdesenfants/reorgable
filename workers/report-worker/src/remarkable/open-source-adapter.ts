@@ -15,12 +15,6 @@ type UploadResponsePayload = {
 const DEFAULT_WEBAPP_HOST = "https://webapp-prod.cloud.remarkable.engineering";
 const DEFAULT_INTERNAL_HOST = "https://internal.cloud.remarkable.com";
 
-const toUploadName = (folder: string, fileName: string): string => {
-  const normalizedFolder = folder.replace(/^\/+/, "").replace(/\/+$/, "");
-  if (!normalizedFolder) return fileName;
-  return `${normalizedFolder} - ${fileName}`;
-};
-
 const encodeRmMeta = (name: string): string => {
   const payload = JSON.stringify({ file_name: name });
   return btoa(payload);
@@ -64,7 +58,11 @@ export class OpenSourceRemarkableAdapter implements RemarkableAdapter {
     bytes: Uint8Array;
   }): Promise<RemarkableUploadResult> {
     try {
-      const uploadName = toUploadName(args.folder, args.fileName);
+      // The reMarkable cloud API only supports flat upload to root — no folder
+      // placement or metadata update after the fact. The file_name in rm-meta
+      // becomes the visible document title on the device, so we strip the .pdf
+      // extension for a clean date-only display name (e.g. "2025-03-29").
+      const displayName = args.fileName.replace(/\.pdf$/i, "");
       const token = await this.getSessionToken();
       const internalHost = this.env.REMARKABLE_INTERNAL_HOST ?? DEFAULT_INTERNAL_HOST;
 
@@ -75,7 +73,7 @@ export class OpenSourceRemarkableAdapter implements RemarkableAdapter {
         headers: {
           authorization: `Bearer ${token}`,
           "content-type": "application/pdf",
-          "rm-meta": encodeRmMeta(uploadName),
+          "rm-meta": encodeRmMeta(displayName),
           "rm-source": "RoR-Browser"
         },
         body: bodyBytes.buffer
