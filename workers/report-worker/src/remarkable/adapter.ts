@@ -52,4 +52,7 @@ export interface RemarkableAdapter {
 
   /** Download raw document bytes by ID. If unsupported, returns ok: false. */
   downloadDocument(docId: string): Promise<RemarkableDownloadResult>;
+
+  /** Delete a document by ID. If unsupported, returns ok: false. */
+  deleteDocument(docId: string): Promise<{ ok: boolean; message: string }>;
 }

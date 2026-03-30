@@ -196,4 +196,32 @@ export class OpenSourceRemarkableAdapter implements RemarkableAdapter {
       };
     }
   }
+
+  async deleteDocument(docId: string): Promise<{ ok: boolean; message: string }> {
+    try {
+      const token = await this.getSessionToken();
+      const internalHost = this.env.REMARKABLE_INTERNAL_HOST ?? DEFAULT_INTERNAL_HOST;
+
+      const response = await fetch(`${internalHost}/doc/v2/files/${encodeURIComponent(docId)}`, {
+        method: "DELETE",
+        headers: {
+          authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!response.ok) {
+        return {
+          ok: false,
+          message: `Delete failed: ${response.status} ${await response.text()}`,
+        };
+      }
+
+      return { ok: true, message: `Deleted document ${docId}` };
+    } catch (error) {
+      return {
+        ok: false,
+        message: error instanceof Error ? error.message : "Unknown delete error",
+      };
+    }
+  }
 }

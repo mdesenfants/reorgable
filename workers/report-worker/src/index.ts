@@ -72,11 +72,6 @@ const getPacificParts = (date: Date) => {
   };
 };
 
-const shouldRunNow = (date: Date): boolean => {
-  const parts = getPacificParts(date);
-  return parts.hour === 5;
-};
-
 const formatDatePacific = (date: Date): string => {
   return new Intl.DateTimeFormat("en-US", {
     timeZone: PACIFIC_TIMEZONE,
@@ -225,9 +220,6 @@ async function archivePreviousBrief(
 
 async function runDailyReport(env: Env, opts?: { force?: boolean; lookbackHours?: number; since?: string }) {
   const now = new Date();
-  if (!opts?.force && !shouldRunNow(now)) {
-    return { ok: true, skipped: true, reason: "Not 5 AM Pacific" };
-  }
 
   const reportDateKey = formatDateKeyPacific(now);
   if (!opts?.force) {
@@ -246,6 +238,10 @@ async function runDailyReport(env: Env, opts?: { force?: boolean; lookbackHours?
     cursorOverride = parsed.toISOString();
   } else if (typeof opts?.lookbackHours === "number" && opts.lookbackHours > 0) {
     cursorOverride = new Date(now.getTime() - opts.lookbackHours * 60 * 60 * 1000).toISOString();
+  } else if (opts?.force) {
+    // Force runs without explicit cursor default to 24h lookback so all
+    // daily-sync data is captured (calendar, tasks, inbox, etc.).
+    cursorOverride = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
   }
 
   const dateLabel = formatDatePacific(now);
@@ -321,10 +317,20 @@ async function runDailyReport(env: Env, opts?: { force?: boolean; lookbackHours?
   if (!uploadResult!.ok) {
     const deadLetterKey = `dead-letter/report/${fileName}`;
     await env.STATE_KV.put(deadLetterKey, pdfBytes, { expirationTtl: 7 * 24 * 60 * 60 });
-  } else if (!opts?.force) {
+  } else {
     await env.STATE_KV.put(`report_generated:${reportDateKey}`, now.toISOString(), {
       expirationTtl: 8 * 24 * 60 * 60,
     });
+
+    // Remove stale reMarkable documents from earlier runs on the same date
+    // so the device only shows the latest report.
+    const staleRuns = await env.DB.prepare(
+      `SELECT remarkable_doc_id FROM report_runs WHERE run_at LIKE ? AND remarkable_doc_id IS NOT NULL`
+    ).bind(`${reportDateKey}%`).all<{ remarkable_doc_id: string }>();
+
+    for (const row of staleRuns.results) {
+      await remarkable.deleteDocument(row.remarkable_doc_id);
+    }
   }
 
   const archiveResult = await archivePreviousBrief(env, remarkable, now, fileName);
@@ -349,9 +355,7 @@ async function runDailyReport(env: Env, opts?: { force?: boolean; lookbackHours?
     await recordEngagementTracking(env, runId, uploadResult!.docId, fileName, now);
   }
 
-  if (!opts?.force) {
-    await env.STATE_KV.put("last_report_at", now.toISOString());
-  }
+  await env.STATE_KV.put("last_report_at", now.toISOString());
 
   return {
     ok: true,
